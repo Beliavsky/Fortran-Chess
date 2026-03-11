@@ -1,5 +1,6 @@
 MODULE Chess_GUI_App
     USE, INTRINSIC :: iso_c_binding
+    USE App_Defaults, ONLY: DEFAULT_SEARCH_DEPTH
     USE Chess_Types
     USE Board_Utils, ONLY: init_board, get_opponent_color
     USE Evaluation, ONLY: evaluate_board
@@ -137,7 +138,7 @@ MODULE Chess_GUI_App
     LOGICAL, SAVE :: gui_autoplay_mode = .FALSE.
     INTEGER, SAVE :: gui_human_color = WHITE
     INTEGER, SAVE :: gui_ai_color = BLACK
-    INTEGER, SAVE :: gui_search_depth = 5
+    INTEGER, SAVE :: gui_search_depth = DEFAULT_SEARCH_DEPTH
     INTEGER, SAVE :: gui_book_max_moves_per_side = -1
     INTEGER, SAVE :: gui_game_winner_color = NO_COLOR
     INTEGER, SAVE :: gui_current_game_status = GAME_ONGOING
@@ -582,15 +583,17 @@ CONTAINS
 
     SUBROUTINE create_gui_controls(parent_hwnd)
         TYPE(c_ptr), VALUE :: parent_hwnd
+        CHARACTER(LEN=16) :: default_depth_text
 
         CALL log_gui_checkpoint('create_gui_controls', 'entered')
+        WRITE(default_depth_text, '(I0)') DEFAULT_SEARCH_DEPTH
         hwnd_setup_help = create_control('STATIC', 'Color, time, depth, and book max (blank = unlimited).', &
             0_c_long, WS_CHILD + WS_VISIBLE, PANEL_LEFT, 24_c_int, 380_c_int, 20_c_int, parent_hwnd)
         hwnd_color_edit = create_control('EDIT', 'white', WS_EX_CLIENTEDGE, &
             WS_CHILD + WS_VISIBLE + WS_TABSTOP + WS_BORDER + ES_AUTOHSCROLL, PANEL_LEFT, 64_c_int, 76_c_int, 24_c_int, parent_hwnd)
         hwnd_time_edit = create_control('EDIT', '3+2', WS_EX_CLIENTEDGE, &
             WS_CHILD + WS_VISIBLE + WS_TABSTOP + WS_BORDER + ES_AUTOHSCROLL, PANEL_LEFT + 88_c_int, 64_c_int, 72_c_int, 24_c_int, parent_hwnd)
-        hwnd_depth_edit = create_control('EDIT', '5', WS_EX_CLIENTEDGE, &
+        hwnd_depth_edit = create_control('EDIT', TRIM(default_depth_text), WS_EX_CLIENTEDGE, &
             WS_CHILD + WS_VISIBLE + WS_TABSTOP + WS_BORDER + ES_AUTOHSCROLL, PANEL_LEFT + 172_c_int, 64_c_int, 44_c_int, 24_c_int, parent_hwnd)
         hwnd_book_limit_edit = create_control('EDIT', '', WS_EX_CLIENTEDGE, &
             WS_CHILD + WS_VISIBLE + WS_TABSTOP + WS_BORDER + ES_AUTOHSCROLL, PANEL_LEFT + 228_c_int, 64_c_int, 60_c_int, 24_c_int, parent_hwnd)
@@ -829,7 +832,7 @@ CONTAINS
         gui_white_time_ms = 0
         gui_black_time_ms = 0
         gui_increment_ms = 0
-        gui_search_depth = 5
+        gui_search_depth = DEFAULT_SEARCH_DEPTH
         gui_book_max_moves_per_side = -1
         gui_pgn_time_control_tag = '-'
         IF (LEN_TRIM(time_text) > 0 .AND. time_text /= 'off' .AND. time_text /= 'none') THEN

@@ -51,6 +51,7 @@ call :stage_if_exists ".gitignore"
 call :stage_if_exists "Makefile"
 call :stage_if_exists "README.md"
 call :stage_if_exists "%~nx0"
+call :stage_if_exists "upload_needed_files_to_github.bat"
 
 for %%F in (*.f90) do (
     if exist "%%F" git add -- "%%F"
@@ -98,9 +99,9 @@ if errorlevel 2 (
     exit /b 0
 )
 
-set "COMMIT_MESSAGE=Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, configurable GUI depth, and search fixes"
-set /p "COMMIT_MESSAGE=Commit message [Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, configurable GUI depth, and search fixes]: "
-if "!COMMIT_MESSAGE!"=="" set "COMMIT_MESSAGE=Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, configurable GUI depth, and search fixes"
+set "COMMIT_MESSAGE=Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, search fixes, and shared default-depth settings"
+set /p "COMMIT_MESSAGE=Commit message [Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, search fixes, and shared default-depth settings]: "
+if "!COMMIT_MESSAGE!"=="" set "COMMIT_MESSAGE=Add Windows GUI, opening-book validation/fixes, autoplay/takeback/suggest commands, PGN/logging improvements, TimeControl/threefold support, search fixes, and shared default-depth settings"
 
 git commit -m "!COMMIT_MESSAGE!"
 if errorlevel 1 (

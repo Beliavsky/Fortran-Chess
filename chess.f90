@@ -2,6 +2,7 @@
 ! Main Program: Human vs Computer
 ! ============================================
 PROGRAM Fortran_Chess
+    USE App_Defaults, ONLY: DEFAULT_SEARCH_DEPTH
     USE Chess_Types
     USE Board_Utils
     USE Evaluation, ONLY: evaluate_board
@@ -149,7 +150,7 @@ PROGRAM Fortran_Chess
         PRINT *, "Loaded opening sequence from " // TRIM(opening_filename)
     END IF
 
-    search_depth = 5 ! AI Difficulty
+    search_depth = DEFAULT_SEARCH_DEPTH
     ! --- Player Color Selection ---
     DO
         PRINT *, "Choose your color (White/Black): "
@@ -197,9 +198,11 @@ PROGRAM Fortran_Chess
 
     DO
         IF (time_control_enabled) THEN
-            PRINT *, "Enter AI max search depth (e.g., 5, actual think time comes from the shared clock): "
+            PRINT '(A,I0,A)', "Enter AI max search depth (e.g., ", DEFAULT_SEARCH_DEPTH, &
+                ", actual think time comes from the shared clock): "
         ELSE
-            PRINT *, "Enter AI max search depth (e.g., 5, still capped at 60 seconds per computer move): "
+            PRINT '(A,I0,A)', "Enter AI max search depth (e.g., ", DEFAULT_SEARCH_DEPTH, &
+                ", still capped at 60 seconds per computer move): "
         END IF
         READ *, search_depth
         IF (search_depth >= 1 .AND. search_depth <= 10) THEN ! Example valid range

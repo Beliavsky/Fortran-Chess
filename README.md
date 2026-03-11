@@ -391,8 +391,8 @@ Choose your color (White/Black):
 White
 Time control for both sides (e.g., 3+2 for 3 minutes plus 2 seconds increment, blank for none):
 3+2
-Enter AI max search depth (e.g., 5, actual think time comes from the shared clock):
-5
+Enter AI max search depth (e.g., 7, actual think time comes from the shared clock):
+7
 Show evaluation after computer moves? (Y/n):
 y
 Resign threshold in pawns (default 5, type off for no resignation):
