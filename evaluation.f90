@@ -4,7 +4,9 @@
 ! ============================================
 MODULE Evaluation
     USE Chess_Types, ONLY: PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, NO_PIECE, &
-                           BOARD_SIZE, Board_Type, Square_Type, get_piece_order, WHITE, BLACK
+                           BOARD_SIZE, Board_Type, Square_Type, get_piece_order, WHITE, BLACK, &
+                           KNIGHT_DELTAS, BISHOP_DIRS, ROOK_DIRS, QUEEN_DIRS
+    USE Board_Utils, ONLY: find_king, sq_is_valid, is_square_attacked
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: evaluate_board
@@ -139,6 +141,25 @@ MODULE Evaluation
         -12, 17, 14, 17, 17, 38, 23, 11, &
         -74, -35, -18, -18, -11, 15, 4, -17 /), (/8,8/), ORDER=(/2,1/))
 
+    INTEGER, PARAMETER :: BISHOP_PAIR_BONUS_MG = 30
+    INTEGER, PARAMETER :: BISHOP_PAIR_BONUS_EG = 45
+    INTEGER, PARAMETER :: MINOR_UNDEVELOPED_PENALTY = 12
+    INTEGER, PARAMETER :: CASTLED_KING_BONUS_MG = 24
+    INTEGER, PARAMETER :: UNCASTLED_KING_PENALTY_MG = 16
+    INTEGER, PARAMETER :: DOUBLED_PAWN_PENALTY_MG = 12
+    INTEGER, PARAMETER :: DOUBLED_PAWN_PENALTY_EG = 18
+    INTEGER, PARAMETER :: ISOLATED_PAWN_PENALTY_MG = 14
+    INTEGER, PARAMETER :: ISOLATED_PAWN_PENALTY_EG = 10
+    INTEGER, PARAMETER :: CENTER_PAWN_BONUS_MG = 14
+    INTEGER, PARAMETER :: FLANK_PAWN_ADVANCE_PENALTY_MG = 12
+    INTEGER, PARAMETER :: KING_SHIELD_PAWN_MG = 10
+    INTEGER, PARAMETER, DIMENSION(8) :: PASSED_PAWN_BONUS_MG = (/ 0, 0, 8, 18, 32, 52, 78, 0 /)
+    INTEGER, PARAMETER, DIMENSION(8) :: PASSED_PAWN_BONUS_EG = (/ 0, 0, 12, 28, 52, 84, 128, 0 /)
+    INTEGER, PARAMETER :: CENTRAL_PAWN_BLOCKER_PENALTY = 22
+    INTEGER, PARAMETER, DIMENSION(6) :: MOBILITY_WEIGHT_MG = (/ 0, 4, 4, 2, 1, 0 /)
+    INTEGER, PARAMETER, DIMENSION(6) :: MOBILITY_WEIGHT_EG = (/ 0, 3, 3, 2, 1, 0 /)
+    INTEGER, PARAMETER, DIMENSION(6) :: LOOSE_PIECE_PENALTY_MG = (/ 0, 24, 24, 32, 48, 0 /)
+    INTEGER, PARAMETER, DIMENSION(6) :: LOOSE_PIECE_PENALTY_EG = (/ 0, 18, 18, 24, 36, 0 /)
 
 CONTAINS
 
@@ -198,18 +219,29 @@ CONTAINS
         TYPE(Square_Type) :: sq
         INTEGER :: mg_score, eg_score
         INTEGER :: mg_pst, eg_pst
+        INTEGER, DIMENSION(BOARD_SIZE) :: white_pawn_files, black_pawn_files
+        INTEGER :: white_bishops, black_bishops
+        TYPE(Square_Type) :: white_king_sq, black_king_sq
 
         ! --- Calculate Game Phase ---
         phase = 0
+        white_pawn_files = 0
+        black_pawn_files = 0
+        white_bishops = 0
+        black_bishops = 0
         DO i = 1, board%num_white_pieces
             sq = board%white_pieces(i)
             piece = board%squares_piece(sq%rank, sq%file)
             phase = phase + get_piece_phase(piece)
+            IF (piece == PAWN) white_pawn_files(sq%file) = white_pawn_files(sq%file) + 1
+            IF (piece == BISHOP) white_bishops = white_bishops + 1
         END DO
         DO i = 1, board%num_black_pieces
             sq = board%black_pieces(i)
             piece = board%squares_piece(sq%rank, sq%file)
             phase = phase + get_piece_phase(piece)
+            IF (piece == PAWN) black_pawn_files(sq%file) = black_pawn_files(sq%file) + 1
+            IF (piece == BISHOP) black_bishops = black_bishops + 1
         END DO
         phase = MIN(phase, TOTAL_PHASE)
 
@@ -242,6 +274,16 @@ CONTAINS
             mg_score = mg_score - (MATERIAL_MG(piece) + mg_pst)
             eg_score = eg_score - (MATERIAL_EG(piece) + eg_pst)
         END DO
+
+        white_king_sq = find_king(board, WHITE)
+        black_king_sq = find_king(board, BLACK)
+
+        CALL add_pawn_structure_terms(board, WHITE, white_pawn_files, white_king_sq, mg_score, eg_score)
+        CALL add_pawn_structure_terms(board, BLACK, black_pawn_files, black_king_sq, mg_score, eg_score)
+        CALL add_development_terms(board, white_king_sq, black_king_sq, white_bishops, black_bishops, mg_score, eg_score)
+        CALL add_king_safety_terms(board, white_king_sq, black_king_sq, mg_score)
+        CALL add_central_pawn_blocker_terms(board, mg_score)
+        CALL add_piece_activity_terms(board, mg_score, eg_score)
 
         evaluate_board = tapered_pst_value(mg_score, eg_score, phase, TOTAL_PHASE)
         IF (board%current_player == BLACK) evaluate_board = -evaluate_board
@@ -276,5 +318,343 @@ CONTAINS
             eg_pst = 0
         END SELECT
     END SUBROUTINE get_piece_pst
+
+    SUBROUTINE add_pawn_structure_terms(board, color, own_pawn_files, king_sq, mg_score, eg_score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(IN) :: color
+        INTEGER, DIMENSION(BOARD_SIZE), INTENT(IN) :: own_pawn_files
+        TYPE(Square_Type), INTENT(IN) :: king_sq
+        INTEGER, INTENT(INOUT) :: mg_score, eg_score
+
+        INTEGER :: i, file_idx, rank_idx, eval_rank, mg_delta, eg_delta
+        TYPE(Square_Type) :: sq
+
+        IF (color == WHITE) THEN
+            DO i = 1, board%num_white_pieces
+                sq = board%white_pieces(i)
+                IF (board%squares_piece(sq%rank, sq%file) /= PAWN) CYCLE
+                file_idx = sq%file
+                rank_idx = sq%rank
+                eval_rank = rank_idx
+                CALL pawn_feature_score(board, color, file_idx, rank_idx, eval_rank, own_pawn_files, king_sq, mg_delta, eg_delta)
+                mg_score = mg_score + mg_delta
+                eg_score = eg_score + eg_delta
+            END DO
+        ELSE
+            DO i = 1, board%num_black_pieces
+                sq = board%black_pieces(i)
+                IF (board%squares_piece(sq%rank, sq%file) /= PAWN) CYCLE
+                file_idx = sq%file
+                rank_idx = sq%rank
+                eval_rank = BOARD_SIZE - rank_idx + 1
+                CALL pawn_feature_score(board, color, file_idx, rank_idx, eval_rank, own_pawn_files, king_sq, mg_delta, eg_delta)
+                mg_score = mg_score - mg_delta
+                eg_score = eg_score - eg_delta
+            END DO
+        END IF
+    END SUBROUTINE add_pawn_structure_terms
+
+    SUBROUTINE pawn_feature_score(board, color, file_idx, rank_idx, eval_rank, own_pawn_files, king_sq, mg_delta, eg_delta)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(IN) :: color, file_idx, rank_idx, eval_rank
+        INTEGER, DIMENSION(BOARD_SIZE), INTENT(IN) :: own_pawn_files
+        TYPE(Square_Type), INTENT(IN) :: king_sq
+        INTEGER, INTENT(OUT) :: mg_delta, eg_delta
+        LOGICAL :: isolated
+
+        mg_delta = 0
+        eg_delta = 0
+
+        IF (own_pawn_files(file_idx) > 1) THEN
+            mg_delta = mg_delta - DOUBLED_PAWN_PENALTY_MG
+            eg_delta = eg_delta - DOUBLED_PAWN_PENALTY_EG
+        END IF
+
+        isolated = .TRUE.
+        IF (file_idx > 1) isolated = isolated .AND. own_pawn_files(file_idx - 1) == 0
+        IF (file_idx < BOARD_SIZE) isolated = isolated .AND. own_pawn_files(file_idx + 1) == 0
+        IF (isolated) THEN
+            mg_delta = mg_delta - ISOLATED_PAWN_PENALTY_MG
+            eg_delta = eg_delta - ISOLATED_PAWN_PENALTY_EG
+        END IF
+
+        IF (is_passed_pawn(board, color, rank_idx, file_idx)) THEN
+            mg_delta = mg_delta + PASSED_PAWN_BONUS_MG(eval_rank)
+            eg_delta = eg_delta + PASSED_PAWN_BONUS_EG(eval_rank)
+        END IF
+
+        IF ((file_idx == 4 .OR. file_idx == 5) .AND. eval_rank >= 4) THEN
+            mg_delta = mg_delta + CENTER_PAWN_BONUS_MG + 4 * (eval_rank - 4)
+        END IF
+
+        IF ((file_idx <= 2 .OR. file_idx >= 7) .AND. eval_rank >= 4 .AND. .NOT. king_is_castled(king_sq, color)) THEN
+            mg_delta = mg_delta - FLANK_PAWN_ADVANCE_PENALTY_MG * (eval_rank - 2)
+        END IF
+    END SUBROUTINE pawn_feature_score
+
+    SUBROUTINE add_development_terms(board, white_king_sq, black_king_sq, white_bishops, black_bishops, mg_score, eg_score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Square_Type), INTENT(IN) :: white_king_sq, black_king_sq
+        INTEGER, INTENT(IN) :: white_bishops, black_bishops
+        INTEGER, INTENT(INOUT) :: mg_score, eg_score
+
+        IF (board%squares_piece(1, 2) == KNIGHT .AND. board%squares_color(1, 2) == WHITE) mg_score = mg_score - MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(1, 7) == KNIGHT .AND. board%squares_color(1, 7) == WHITE) mg_score = mg_score - MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(1, 3) == BISHOP .AND. board%squares_color(1, 3) == WHITE) mg_score = mg_score - MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(1, 6) == BISHOP .AND. board%squares_color(1, 6) == WHITE) mg_score = mg_score - MINOR_UNDEVELOPED_PENALTY
+
+        IF (board%squares_piece(8, 2) == KNIGHT .AND. board%squares_color(8, 2) == BLACK) mg_score = mg_score + MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(8, 7) == KNIGHT .AND. board%squares_color(8, 7) == BLACK) mg_score = mg_score + MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(8, 3) == BISHOP .AND. board%squares_color(8, 3) == BLACK) mg_score = mg_score + MINOR_UNDEVELOPED_PENALTY
+        IF (board%squares_piece(8, 6) == BISHOP .AND. board%squares_color(8, 6) == BLACK) mg_score = mg_score + MINOR_UNDEVELOPED_PENALTY
+
+        IF (white_bishops >= 2) THEN
+            mg_score = mg_score + BISHOP_PAIR_BONUS_MG
+            eg_score = eg_score + BISHOP_PAIR_BONUS_EG
+        END IF
+        IF (black_bishops >= 2) THEN
+            mg_score = mg_score - BISHOP_PAIR_BONUS_MG
+            eg_score = eg_score - BISHOP_PAIR_BONUS_EG
+        END IF
+
+        IF (king_is_castled(white_king_sq, WHITE)) THEN
+            mg_score = mg_score + CASTLED_KING_BONUS_MG
+        ELSE IF (white_king_sq%rank == 1 .AND. white_king_sq%file == 5) THEN
+            mg_score = mg_score - UNCASTLED_KING_PENALTY_MG
+        END IF
+
+        IF (king_is_castled(black_king_sq, BLACK)) THEN
+            mg_score = mg_score - CASTLED_KING_BONUS_MG
+        ELSE IF (black_king_sq%rank == 8 .AND. black_king_sq%file == 5) THEN
+            mg_score = mg_score + UNCASTLED_KING_PENALTY_MG
+        END IF
+    END SUBROUTINE add_development_terms
+
+    SUBROUTINE add_king_safety_terms(board, white_king_sq, black_king_sq, mg_score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Square_Type), INTENT(IN) :: white_king_sq, black_king_sq
+        INTEGER, INTENT(INOUT) :: mg_score
+
+        mg_score = mg_score + pawn_shield_score(board, WHITE, white_king_sq)
+        mg_score = mg_score - pawn_shield_score(board, BLACK, black_king_sq)
+    END SUBROUTINE add_king_safety_terms
+
+    PURE LOGICAL FUNCTION king_is_castled(king_sq, color)
+        TYPE(Square_Type), INTENT(IN) :: king_sq
+        INTEGER, INTENT(IN) :: color
+
+        IF (color == WHITE) THEN
+            king_is_castled = (king_sq%rank == 1 .AND. (king_sq%file == 3 .OR. king_sq%file == 7))
+        ELSE
+            king_is_castled = (king_sq%rank == 8 .AND. (king_sq%file == 3 .OR. king_sq%file == 7))
+        END IF
+    END FUNCTION king_is_castled
+
+    INTEGER FUNCTION pawn_shield_score(board, color, king_sq) RESULT(score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(IN) :: color
+        TYPE(Square_Type), INTENT(IN) :: king_sq
+
+        INTEGER :: df, rank1, rank2, file1, dir
+
+        score = 0
+        IF (king_sq%rank == 0) RETURN
+
+        IF (color == WHITE) THEN
+            dir = 1
+        ELSE
+            dir = -1
+        END IF
+
+        rank1 = king_sq%rank + dir
+        rank2 = king_sq%rank + 2 * dir
+        DO df = -1, 1
+            file1 = king_sq%file + df
+            IF (.NOT. sq_is_valid(MAX(1, MIN(BOARD_SIZE, rank1)), file1)) CYCLE
+
+            IF (sq_is_valid(rank1, file1) .AND. board%squares_piece(rank1, file1) == PAWN .AND. &
+                board%squares_color(rank1, file1) == color) THEN
+                score = score + KING_SHIELD_PAWN_MG
+            ELSE IF (sq_is_valid(rank2, file1) .AND. board%squares_piece(rank2, file1) == PAWN .AND. &
+                     board%squares_color(rank2, file1) == color) THEN
+                score = score + KING_SHIELD_PAWN_MG / 2
+            ELSE
+                score = score - KING_SHIELD_PAWN_MG / 2
+            END IF
+        END DO
+    END FUNCTION pawn_shield_score
+
+    LOGICAL FUNCTION is_passed_pawn(board, color, rank_idx, file_idx) RESULT(passed)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(IN) :: color, rank_idx, file_idx
+
+        INTEGER :: r, f, start_rank, end_rank, step, enemy_color
+
+        passed = .TRUE.
+        IF (color == WHITE) THEN
+            enemy_color = BLACK
+            start_rank = rank_idx + 1
+            end_rank = BOARD_SIZE
+            step = 1
+        ELSE
+            enemy_color = WHITE
+            start_rank = rank_idx - 1
+            end_rank = 1
+            step = -1
+        END IF
+
+        DO r = start_rank, end_rank, step
+            DO f = MAX(1, file_idx - 1), MIN(BOARD_SIZE, file_idx + 1)
+                IF (board%squares_piece(r, f) == PAWN .AND. board%squares_color(r, f) == enemy_color) THEN
+                    passed = .FALSE.
+                    RETURN
+                END IF
+            END DO
+        END DO
+    END FUNCTION is_passed_pawn
+
+    SUBROUTINE add_central_pawn_blocker_terms(board, mg_score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(INOUT) :: mg_score
+
+        IF (board%squares_piece(2, 4) == PAWN .AND. board%squares_color(2, 4) == WHITE) THEN
+            IF (board%squares_color(3, 4) == WHITE .AND. board%squares_piece(3, 4) /= NO_PIECE .AND. &
+                board%squares_piece(3, 4) /= PAWN) THEN
+                mg_score = mg_score - CENTRAL_PAWN_BLOCKER_PENALTY
+            END IF
+        END IF
+        IF (board%squares_piece(2, 5) == PAWN .AND. board%squares_color(2, 5) == WHITE) THEN
+            IF (board%squares_color(3, 5) == WHITE .AND. board%squares_piece(3, 5) /= NO_PIECE .AND. &
+                board%squares_piece(3, 5) /= PAWN) THEN
+                mg_score = mg_score - CENTRAL_PAWN_BLOCKER_PENALTY
+            END IF
+        END IF
+
+        IF (board%squares_piece(7, 4) == PAWN .AND. board%squares_color(7, 4) == BLACK) THEN
+            IF (board%squares_color(6, 4) == BLACK .AND. board%squares_piece(6, 4) /= NO_PIECE .AND. &
+                board%squares_piece(6, 4) /= PAWN) THEN
+                mg_score = mg_score + CENTRAL_PAWN_BLOCKER_PENALTY
+            END IF
+        END IF
+        IF (board%squares_piece(7, 5) == PAWN .AND. board%squares_color(7, 5) == BLACK) THEN
+            IF (board%squares_color(6, 5) == BLACK .AND. board%squares_piece(6, 5) /= NO_PIECE .AND. &
+                board%squares_piece(6, 5) /= PAWN) THEN
+                mg_score = mg_score + CENTRAL_PAWN_BLOCKER_PENALTY
+            END IF
+        END IF
+    END SUBROUTINE add_central_pawn_blocker_terms
+
+    SUBROUTINE add_piece_activity_terms(board, mg_score, eg_score)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(INOUT) :: mg_score, eg_score
+
+        INTEGER :: i, piece, mobility, mg_delta, eg_delta
+        TYPE(Square_Type) :: sq
+
+        DO i = 1, board%num_white_pieces
+            sq = board%white_pieces(i)
+            piece = board%squares_piece(sq%rank, sq%file)
+            CALL piece_activity_score(board, sq, piece, WHITE, mobility, mg_delta, eg_delta)
+            mg_score = mg_score + mg_delta
+            eg_score = eg_score + eg_delta
+        END DO
+
+        DO i = 1, board%num_black_pieces
+            sq = board%black_pieces(i)
+            piece = board%squares_piece(sq%rank, sq%file)
+            CALL piece_activity_score(board, sq, piece, BLACK, mobility, mg_delta, eg_delta)
+            mg_score = mg_score - mg_delta
+            eg_score = eg_score - eg_delta
+        END DO
+    END SUBROUTINE add_piece_activity_terms
+
+    SUBROUTINE piece_activity_score(board, sq, piece, color, mobility, mg_delta, eg_delta)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Square_Type), INTENT(IN) :: sq
+        INTEGER, INTENT(IN) :: piece, color
+        INTEGER, INTENT(OUT) :: mobility, mg_delta, eg_delta
+
+        LOGICAL :: attacked, defended
+
+        mobility = count_piece_mobility(board, sq, piece, color)
+        mg_delta = 0
+        eg_delta = 0
+
+        IF (piece >= KNIGHT .AND. piece <= QUEEN) THEN
+            mg_delta = mg_delta + MOBILITY_WEIGHT_MG(piece) * mobility
+            eg_delta = eg_delta + MOBILITY_WEIGHT_EG(piece) * mobility
+
+            attacked = is_square_attacked(board, sq, get_opponent_color_eval(color))
+            defended = is_square_attacked(board, sq, color)
+            IF (attacked) THEN
+                mg_delta = mg_delta - LOOSE_PIECE_PENALTY_MG(piece)
+                eg_delta = eg_delta - LOOSE_PIECE_PENALTY_EG(piece)
+                IF (.NOT. defended) THEN
+                    mg_delta = mg_delta - LOOSE_PIECE_PENALTY_MG(piece)
+                    eg_delta = eg_delta - LOOSE_PIECE_PENALTY_EG(piece)
+                END IF
+            END IF
+        END IF
+    END SUBROUTINE piece_activity_score
+
+    INTEGER FUNCTION count_piece_mobility(board, sq, piece, color) RESULT(mobility)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Square_Type), INTENT(IN) :: sq
+        INTEGER, INTENT(IN) :: piece, color
+
+        INTEGER :: i, nr, nf
+
+        mobility = 0
+        SELECT CASE(piece)
+        CASE(KNIGHT)
+            DO i = 1, 8
+                nr = sq%rank + KNIGHT_DELTAS(i, 1)
+                nf = sq%file + KNIGHT_DELTAS(i, 2)
+                IF (sq_is_valid(nr, nf) .AND. board%squares_color(nr, nf) /= color) mobility = mobility + 1
+            END DO
+        CASE(BISHOP)
+            mobility = count_sliding_mobility(board, sq, color, BISHOP_DIRS, 4)
+        CASE(ROOK)
+            mobility = count_sliding_mobility(board, sq, color, ROOK_DIRS, 4)
+        CASE(QUEEN)
+            mobility = count_sliding_mobility(board, sq, color, QUEEN_DIRS, 8)
+        CASE DEFAULT
+            mobility = 0
+        END SELECT
+    END FUNCTION count_piece_mobility
+
+    INTEGER FUNCTION count_sliding_mobility(board, sq, color, directions, num_dirs) RESULT(mobility)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Square_Type), INTENT(IN) :: sq
+        INTEGER, DIMENSION(num_dirs, 2), INTENT(IN) :: directions
+        INTEGER, INTENT(IN) :: color, num_dirs
+
+        INTEGER :: i, nr, nf, dr, df
+
+        mobility = 0
+        DO i = 1, num_dirs
+            dr = directions(i, 1)
+            df = directions(i, 2)
+            nr = sq%rank + dr
+            nf = sq%file + df
+            DO WHILE (sq_is_valid(nr, nf))
+                IF (board%squares_color(nr, nf) == color) EXIT
+                mobility = mobility + 1
+                IF (board%squares_piece(nr, nf) /= NO_PIECE) EXIT
+                nr = nr + dr
+                nf = nf + df
+            END DO
+        END DO
+    END FUNCTION count_sliding_mobility
+
+    PURE INTEGER FUNCTION get_opponent_color_eval(color)
+        INTEGER, INTENT(IN) :: color
+
+        IF (color == WHITE) THEN
+            get_opponent_color_eval = BLACK
+        ELSE
+            get_opponent_color_eval = WHITE
+        END IF
+    END FUNCTION get_opponent_color_eval
 
 END MODULE Evaluation

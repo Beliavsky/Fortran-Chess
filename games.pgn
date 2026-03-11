@@ -1,0 +1,81 @@
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 d5 2. c4 e6 3. Nc3 Nf6 4. Bg5 Be7 5. e3 O-O 6. Nf3 h6 7. Bxf6 Kh8 *
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 Nf6 2. c4 e6 3. Nc3 d5 *
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 Nf6 2. c4 e6 3. Nc3 d5 *
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 Nf6 2. c4 g6 3. Nc3 d5 4. cxd5 Bg7 5. e4 O-O 6. Nf3 c6 7. dxc6 Nxc6 8. d5 Qc7 9. dxc6 Qxc6 *
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "0-1"]
+
+1. d4 d5 2. c4 e6 3. Nc3 Nf6 4. Bg5 Be7 5. e3 O-O 6. Nf3 h6 7. Bxf6 Bxf6 8. Rc1 c5 9. dxc5 Nc6 10. cxd5 exd5 11. Be2 Bf5 12. O-O d4 13. exd4 Nxd4 14. Nxd4 Bxd4 15. b4 Be5 16. a3 Qh4 17. Bf3 Qxh2# 0-1
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 d5 *
+
+
+[Event "FortranChess Console Game"]
+[Site "?"]
+[Date "2026.03.11"]
+[Round "?"]
+[White "Human"]
+[Black "Computer"]
+[Result "*"]
+
+1. d4 Nf6 2. c4 g6 3. Nc3 Bg7 4. e4 O-O 5. e5 Ne8 6. Nf3 d6 7. Bf4 Nc6 8. exd6 cxd6 9. Be2 Bg4
+10. d5 Nb4 11. O-O Rc8 12. Qb3 a5 13. Rac1 Bxf3 14. Bxf3 Nd3 15. Be3 Nxc1 16. Rxc1 Qc7 17. Nb5 Qd7
+18. Rc2 Nc7 19. Nd4 Na6 20. a3 Nc5 21. Qa2 e5 22. Nb5 e4 23. Be2 Rfe8 24. b4 axb4 25. axb4 Ra8
+26. Qb1 Ra1 27. Qxa1 Bxa1 28. Bxc5 dxc5 29. bxc5 e3 30. f3 Qf5 31. Rc1 Bb2 32. Rd1 Qc2 33. Kf1 Rd8
+34. d6 Rd7 *
+
+

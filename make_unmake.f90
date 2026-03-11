@@ -4,8 +4,9 @@
 ! ============================================
 MODULE Make_Unmake
     USE Chess_Types
-    USE Board_Utils, ONLY: get_opponent_color, update_piece_lists, update_piece_lists_unmake, file_rank_to_sq
-    USE Transposition_Table, ONLY: ZOBRIST_PIECES, ZOBRIST_BLACK_TO_MOVE, ZOBRIST_CASTLING, ZOBRIST_EP_FILE
+    USE Board_Utils, ONLY: get_opponent_color, update_piece_lists, update_piece_lists_unmake, &
+                           file_rank_to_sq, update_piece_position
+    USE Transposition_Table, ONLY: compute_zobrist_hash
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: make_move, unmake_move
@@ -38,7 +39,6 @@ CONTAINS
 
         INTEGER :: r_from, f_from, r_to, f_to, player_color, opponent_color
         INTEGER :: piece_moved, color_moved, r_capture
-        INTEGER(KIND=8) :: new_key
         TYPE(Square_Type) :: from_sq, to_sq
 
         player_color = board%current_player
@@ -147,105 +147,20 @@ CONTAINS
         ! 5. Switch Player
         board%current_player = opponent_color
 
-        ! --- Update Zobrist Key ---
-        ! Start with current board Zobrist key
-        new_key = board%zobrist_key
-
-        ! 1. XOR out the moving piece from its original square
-        new_key = IEOR(new_key, ZOBRIST_PIECES(piece_moved, player_color, r_from, f_from))
-
-        ! 2. If an EP target square was present, XOR it out (it might change)
-        IF (unmake_info%prev_ep_target_present) THEN
-            new_key = IEOR(new_key, ZOBRIST_EP_FILE(unmake_info%prev_ep_target_sq%file))
-        END IF
-
-        ! 3. XOR out old castling rights and XOR in new castling rights
-        IF (unmake_info%prev_wc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(1))
-        IF (unmake_info%prev_wc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(2))
-        IF (unmake_info%prev_bc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(3))
-        IF (unmake_info%prev_bc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(4))
-        ! Temporarily update board castling rights to new values for Zobrist XOR-out
-        ! This needs to be done *before* applying the new castling rights for the current board state
-        ! However, the values in unmake_info are the *previous* rights, so we XOR those out from the initial key,
-        ! then XOR in the *new* rights of the board (which are updated later in make_move).
-        ! It's cleaner to handle this after board's castling rights are updated.
-        ! Let's re-evaluate: Zobrist key should be the hash of the *final* board state.
-        ! So we XOR out the *old* pieces/rights/EP, then XOR *in* the *new* ones.
-        ! The castling rights are updated in step 4 (lines 142-181) and EP in step 3 (lines 135-140)
-
-        ! The key starts as board%zobrist_key (hash of the board *before* the move but with current player to move).
-        ! We need to XOR out everything that changes from the board%zobrist_key.
-        ! And then XOR in everything that is new.
-
-        ! For clarity, re-compute new_key from scratch based on components that change.
-        ! This is safer than incremental XORs when complex changes occur.
-        ! However, Zobrist is designed for incremental updates.
-        ! Let's follow the user's advice for fixing the incremental update.
-
-        ! new_key will be the zobrist key for the board *after* the move.
-        !
-        ! We start with the key *before* the move (board%zobrist_key) and adjust it.
-
-        ! XOR out piece from from_sq
-        new_key = IEOR(new_key, ZOBRIST_PIECES(piece_moved, player_color, r_from, f_from))
-
-        ! XOR out captured piece (if any) from its square
-        IF (unmake_info%captured_piece_type /= NO_PIECE) THEN
-            new_key = IEOR(new_key, &
-                ZOBRIST_PIECES(unmake_info%captured_piece_type, opponent_color, &
-                               unmake_info%captured_sq%rank, unmake_info%captured_sq%file))
-        END IF
-
-        ! XOR out current EP target if present
-        IF (board%ep_target_present) THEN ! board%ep_target_present holds pre-move value here
-             new_key = IEOR(new_key, ZOBRIST_EP_FILE(board%ep_target_sq%file))
-        END IF
-        
-        ! XOR out current castling rights
-        IF (board%wc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(1))
-        IF (board%wc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(2))
-        IF (board%bc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(3))
-        IF (board%bc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(4))
-
-        ! XOR out current side to move
-        new_key = IEOR(new_key, ZOBRIST_BLACK_TO_MOVE) ! Current player is player_color, so BLACK_TO_MOVE is XORed if current_player is black
-
-        ! Now, XOR in the new state
-
-        ! XOR in moving piece (or promoted piece) at to_sq
-        IF (move%is_castling) THEN
-            new_key = IEOR(new_key, ZOBRIST_PIECES(KING, player_color, r_to, f_to))
-            ! Handle rook for castling
-            IF (f_to == 7) THEN ! Kingside
-                new_key = IEOR(new_key, ZOBRIST_PIECES(ROOK, player_color, r_from, 6)) ! New rook pos
-            ELSE ! Queenside
-                new_key = IEOR(new_key, ZOBRIST_PIECES(ROOK, player_color, r_from, 4)) ! New rook pos
-            END IF
-        ELSE IF (move%promotion_piece /= NO_PIECE) THEN
-            new_key = IEOR(new_key, ZOBRIST_PIECES(move%promotion_piece, player_color, r_to, f_to))
-        ELSE
-            new_key = IEOR(new_key, ZOBRIST_PIECES(piece_moved, player_color, r_to, f_to))
-        END IF
-
-        ! XOR in the new EP target if present
-        IF (board%ep_target_present) THEN ! board%ep_target_present is already updated here
-             new_key = IEOR(new_key, ZOBRIST_EP_FILE(board%ep_target_sq%file))
-        END IF
-
-        ! XOR in the new castling rights
-        IF (board%wc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(1))
-        IF (board%wc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(2))
-        IF (board%bc_k) new_key = IEOR(new_key, ZOBRIST_CASTLING(3))
-        IF (board%bc_q) new_key = IEOR(new_key, ZOBRIST_CASTLING(4))
-        
-        ! XOR in the new side to move (which is now opponent_color)
-        new_key = IEOR(new_key, ZOBRIST_BLACK_TO_MOVE) ! opponent_color is player_color for next move
-        
-        board%zobrist_key = new_key
-
         ! 6. Update piece lists
         CALL update_piece_lists(board, from_sq, to_sq, unmake_info%captured_sq, &
                                unmake_info%captured_piece_type, unmake_info%captured_piece_color)
+        IF (move%is_castling) THEN
+            IF (f_to == 7) THEN
+                CALL update_piece_position(board, file_rank_to_sq(8, r_from), file_rank_to_sq(6, r_from), player_color)
+            ELSE
+                CALL update_piece_position(board, file_rank_to_sq(1, r_from), file_rank_to_sq(4, r_from), player_color)
+            END IF
+        END IF
+
+        ! Recompute the hash from the final board state. This is slower than a
+        ! correct incremental update, but it keeps the transposition table sound.
+        board%zobrist_key = compute_zobrist_hash(board)
 
     END SUBROUTINE make_move
 
@@ -337,6 +252,13 @@ CONTAINS
         ! Update piece lists for unmake
         CALL update_piece_lists_unmake(board, move%from_sq, move%to_sq, unmake_info%captured_sq, &
                                        unmake_info%captured_piece_type, unmake_info%captured_piece_color)
+        IF (move%is_castling) THEN
+            IF (f_to == 7) THEN
+                CALL update_piece_position(board, file_rank_to_sq(6, r_from), file_rank_to_sq(8, r_from), player_color)
+            ELSE
+                CALL update_piece_position(board, file_rank_to_sq(4, r_from), file_rank_to_sq(1, r_from), player_color)
+            END IF
+        END IF
 
     END SUBROUTINE unmake_move
 

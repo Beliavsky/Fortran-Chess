@@ -1,10 +1,11 @@
 MODULE User_Input_Processor
     USE Chess_Types
-    USE Board_Utils, ONLY: char_to_file, char_to_rank
-    USE Move_Generation ! Corrected: legal_moves is passed as argument
+    USE Evaluation, ONLY: evaluate_board
+    USE Search, ONLY: find_best_move
+    USE Notation_Utils, ONLY: move_matches_input, to_lower_string, move_to_san
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: get_human_move
+    PUBLIC :: get_human_move, print_in_game_help
 
 CONTAINS
 
@@ -21,77 +22,144 @@ CONTAINS
     !
     ! Returns:
     !   LOGICAL: .TRUE. if a valid move was found, .FALSE. otherwise (e.g., quit, invalid input)
-    LOGICAL FUNCTION get_human_move(legal_moves, num_legal_moves, chosen_move, game_over_flag)
+    LOGICAL FUNCTION get_human_move(board, legal_moves, num_legal_moves, search_depth, show_eval_after_ai, &
+                                    resign_enabled, resign_threshold_cp, chosen_move, game_over_flag)
+        TYPE(Board_Type), INTENT(IN) :: board
         TYPE(Move_Type), DIMENSION(MAX_MOVES), INTENT(IN) :: legal_moves
         INTEGER, INTENT(IN) :: num_legal_moves
+        INTEGER, INTENT(IN) :: search_depth
+        LOGICAL, INTENT(INOUT) :: show_eval_after_ai
+        LOGICAL, INTENT(INOUT) :: resign_enabled
+        INTEGER, INTENT(INOUT) :: resign_threshold_cp
         TYPE(Move_Type), INTENT(OUT) :: chosen_move
         LOGICAL, INTENT(INOUT) :: game_over_flag
 
-        CHARACTER(LEN=10) :: user_input
-        CHARACTER(LEN=1) :: from_f_char, from_r_char, to_f_char, to_r_char, promo_char
-        TYPE(Square_Type) :: parsed_from_sq, parsed_to_sq
-        INTEGER :: parsed_promo_piece
+        CHARACTER(LEN=64) :: user_input
+        CHARACTER(LEN=64) :: lower_input
+        CHARACTER(LEN=64) :: command_arg
+        CHARACTER(LEN=32) :: hint_text
         LOGICAL :: move_found_internal
-        INTEGER :: i ! Declared loop variable
+        INTEGER :: i
+        INTEGER :: score_cp, white_score_cp
+        INTEGER :: ios
+        REAL :: threshold_pawns
+        TYPE(Board_Type) :: board_copy
+        TYPE(Move_Type) :: hint_move
+        LOGICAL :: hint_found
 
         get_human_move = .FALSE. ! Default to no valid move found
         move_found_internal = .FALSE.
         game_over_flag = .FALSE. ! Default to not game over
 
         PRINT *, "" ! Newline
-        PRINT *, "Your turn. Enter move (e.g., e2e4, e7e8q): "
+        PRINT *, "Your turn. Enter move (e.g., d4, Nf6, cxd5, O-O, e2e4, or score): "
 
         DO WHILE (.NOT. move_found_internal .AND. .NOT. game_over_flag)
-            READ *, user_input
-            IF (TRIM(ADJUSTL(user_input)) == 'quit' .OR. TRIM(ADJUSTL(user_input)) == 'exit') THEN
+            READ(*, '(A)') user_input
+            lower_input = TRIM(ADJUSTL(to_lower_string(user_input)))
+
+            IF (lower_input == 'quit' .OR. lower_input == 'exit') THEN
                 PRINT *, "Exiting game."
                 game_over_flag = .TRUE.
                 RETURN
             END IF
 
-            ! Basic Parsing
-            IF (LEN_TRIM(user_input) >= 4) THEN
-                from_f_char = user_input(1:1); from_r_char = user_input(2:2)
-                to_f_char = user_input(3:3);   to_r_char = user_input(4:4)
-                
-                parsed_from_sq%file = char_to_file(from_f_char)
-                parsed_from_sq%rank = char_to_rank(from_r_char)
-                parsed_to_sq%file = char_to_file(to_f_char)
-                parsed_to_sq%rank = char_to_rank(to_r_char)
+            IF (lower_input == 'score') THEN
+                score_cp = evaluate_board(board)
+                IF (board%current_player == BLACK) THEN
+                    white_score_cp = -score_cp
+                ELSE
+                    white_score_cp = score_cp
+                END IF
+                WRITE(*, '(A,F7.2,A)') "Score (White perspective): ", REAL(white_score_cp) / 100.0, " pawns"
+                CYCLE
+            END IF
 
-                ! Validate parsed squares
-                IF (parsed_from_sq%file == -1 .OR. parsed_from_sq%rank == -1 .OR. &
-                    parsed_to_sq%file == -1   .OR. parsed_to_sq%rank == -1) THEN
-                    PRINT *, "Invalid square notation. Please use e.g., 'e2e4'."
+            IF (lower_input == '?' ) THEN
+                board_copy = board
+                CALL find_best_move(board_copy, search_depth, hint_found, hint_move)
+                IF (hint_found) THEN
+                    hint_text = move_to_san(board, hint_move, legal_moves, num_legal_moves)
+                    PRINT *, "Suggested move: ", TRIM(hint_text)
+                ELSE
+                    PRINT *, "No suggestion available."
+                END IF
+                CYCLE
+            END IF
+
+            IF (lower_input == 'help') THEN
+                CALL print_in_game_help()
+                CYCLE
+            END IF
+
+            IF (INDEX(lower_input, 'eval') == 1) THEN
+                command_arg = TRIM(ADJUSTL(lower_input(5:)))
+                IF (LEN_TRIM(command_arg) == 0) THEN
+                    IF (show_eval_after_ai) THEN
+                        PRINT *, "Evaluation display is on."
+                    ELSE
+                        PRINT *, "Evaluation display is off."
+                    END IF
+                ELSE IF (command_arg == 'on') THEN
+                    show_eval_after_ai = .TRUE.
+                    PRINT *, "Evaluation display turned on."
+                ELSE IF (command_arg == 'off') THEN
+                    show_eval_after_ai = .FALSE.
+                    PRINT *, "Evaluation display turned off."
+                ELSE
+                    PRINT *, "Use `eval on` or `eval off`."
+                END IF
+                CYCLE
+            END IF
+
+            IF (INDEX(lower_input, 'resign') == 1) THEN
+                command_arg = TRIM(ADJUSTL(lower_input(7:)))
+                IF (LEN_TRIM(command_arg) == 0) THEN
+                    IF (resign_enabled) THEN
+                        WRITE(*, '(A,F6.2,A)') "Resignation threshold: ", REAL(resign_threshold_cp) / 100.0, " pawns"
+                    ELSE
+                        PRINT *, "Resignation is off."
+                    END IF
                     CYCLE
                 END IF
 
-                parsed_promo_piece = NO_PIECE
-                IF (LEN_TRIM(user_input) == 5) THEN
-                     promo_char = user_input(5:5)
-                     SELECT CASE(promo_char)
-                     CASE('q'); parsed_promo_piece = QUEEN
-                     CASE('r'); parsed_promo_piece = ROOK
-                     CASE('b'); parsed_promo_piece = BISHOP
-                     CASE('n'); parsed_promo_piece = KNIGHT
-                     CASE DEFAULT
-                        PRINT *, "Invalid promotion piece. Use 'q', 'r', 'b', or 'n'."
-                        CYCLE
-                     END SELECT
+                IF (command_arg == 'off' .OR. command_arg == 'none') THEN
+                    resign_enabled = .FALSE.
+                    PRINT *, "Resignation disabled."
+                    CYCLE
                 END IF
 
-                ! Find the move in the legal list
-                DO i = 1, num_legal_moves
-                     IF (legal_moves(i)%from_sq%rank == parsed_from_sq%rank .AND. &
-                         legal_moves(i)%from_sq%file == parsed_from_sq%file .AND. &
-                         legal_moves(i)%to_sq%rank == parsed_to_sq%rank .AND. &
-                         legal_moves(i)%to_sq%file == parsed_to_sq%file .AND. &
-                         legal_moves(i)%promotion_piece == parsed_promo_piece) THEN
-                         chosen_move = legal_moves(i)
-                         move_found_internal = .TRUE.
-                         EXIT ! Exit move finding loop
-                     END IF
-                END DO
+                IF (command_arg == 'on') THEN
+                    resign_enabled = .TRUE.
+                    IF (resign_threshold_cp <= 0) resign_threshold_cp = 500
+                    WRITE(*, '(A,F6.2,A)') "Resignation enabled at ", REAL(resign_threshold_cp) / 100.0, " pawns"
+                    CYCLE
+                END IF
+
+                READ(command_arg, *, IOSTAT=ios) threshold_pawns
+                IF (ios /= 0) THEN
+                    PRINT *, "Use `resign off`, `resign on`, or `resign 5.0`."
+                ELSE IF (threshold_pawns <= 0.0) THEN
+                    resign_enabled = .FALSE.
+                    PRINT *, "Resignation disabled."
+                ELSE
+                    resign_enabled = .TRUE.
+                    resign_threshold_cp = NINT(100.0 * threshold_pawns)
+                    WRITE(*, '(A,F6.2,A)') "Resignation threshold set to ", REAL(resign_threshold_cp) / 100.0, " pawns"
+                END IF
+                CYCLE
+            END IF
+
+            DO i = 1, num_legal_moves
+                IF (move_matches_input(board, legal_moves(i), legal_moves, num_legal_moves, user_input)) THEN
+                    chosen_move = legal_moves(i)
+                    move_found_internal = .TRUE.
+                    EXIT
+                END IF
+            END DO
+
+            IF (.NOT. move_found_internal .AND. LEN_TRIM(user_input) == 0) THEN
+                CYCLE
             END IF
 
             IF (.NOT. move_found_internal) THEN
@@ -104,5 +172,18 @@ CONTAINS
         END IF
 
     END FUNCTION get_human_move
+
+    SUBROUTINE print_in_game_help()
+        PRINT *, "Commands:"
+        PRINT *, "  move        Play a move in SAN or coordinate form, e.g. d4, Nf6, cxd5, e2e4"
+        PRINT *, "  ?           Suggest a move"
+        PRINT *, "  score       Show the current evaluation from White's perspective"
+        PRINT *, "  eval on/off Turn evaluation display after computer moves on or off"
+        PRINT *, "  resign X    Set resignation threshold to X pawns"
+        PRINT *, "  resign off  Disable resignation"
+        PRINT *, "  resign on   Re-enable resignation with the current threshold"
+        PRINT *, "  help        Show this help"
+        PRINT *, "  quit        End the game"
+    END SUBROUTINE print_in_game_help
 
 END MODULE User_Input_Processor

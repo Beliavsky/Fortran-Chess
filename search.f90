@@ -8,6 +8,7 @@ MODULE Search
     USE Move_Generation, ONLY: generate_moves, generate_captures, order_moves
     USE Make_Unmake
     USE Evaluation
+    USE, INTRINSIC :: ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
     USE Transposition_Table, ONLY: probe_tt, store_tt_entry, TT_Entry_Type, &
         HASH_FLAG_EXACT, HASH_FLAG_ALPHA, HASH_FLAG_BETA, new_search_generation, &
         ZOBRIST_BLACK_TO_MOVE, ZOBRIST_EP_FILE
@@ -21,9 +22,108 @@ MODULE Search
     INTEGER, PARAMETER :: MATE_SCORE = 100000 ! Score indicating checkmate
     INTEGER, PARAMETER :: INF = MATE_SCORE + 1000 ! Represents infinity for alpha-beta bounds
     INTEGER, PARAMETER :: MAX_DEPTH = 64 ! Maximum search depth
-    ! Removed NUM_KILLERS and killer_moves array as they are now in Move_Ordering_Heuristics
+    INTEGER, PARAMETER :: TIME_CHECK_INTERVAL = 1024
+
+    LOGICAL, SAVE :: timer_enabled = .FALSE.
+    LOGICAL, SAVE :: countdown_enabled = .FALSE.
+    LOGICAL, SAVE :: search_timed_out = .FALSE.
+    INTEGER(KIND=8), SAVE :: search_start_count = 0
+    INTEGER(KIND=8), SAVE :: search_count_rate = 0
+    INTEGER(KIND=8), SAVE :: nodes_since_time_check = 0
+    REAL, SAVE :: search_time_limit_seconds = 0.0
+    INTEGER, SAVE :: last_countdown_second = -1
+    INTEGER, SAVE :: countdown_column = 0
 
 CONTAINS
+
+    SUBROUTINE start_search_timer(time_limit_seconds, show_countdown)
+        REAL, INTENT(IN), OPTIONAL :: time_limit_seconds
+        LOGICAL, INTENT(IN), OPTIONAL :: show_countdown
+
+        timer_enabled = .FALSE.
+        countdown_enabled = .FALSE.
+        search_timed_out = .FALSE.
+        search_time_limit_seconds = 0.0
+        nodes_since_time_check = 0
+        last_countdown_second = -1
+        countdown_column = 0
+
+        IF (PRESENT(time_limit_seconds)) THEN
+            IF (time_limit_seconds > 0) THEN
+                timer_enabled = .TRUE.
+                search_time_limit_seconds = REAL(time_limit_seconds)
+                CALL SYSTEM_CLOCK(search_start_count, search_count_rate)
+                IF (PRESENT(show_countdown)) countdown_enabled = show_countdown
+                CALL maybe_print_countdown(.TRUE.)
+            END IF
+        END IF
+    END SUBROUTINE start_search_timer
+
+    SUBROUTINE finish_search_timer()
+        IF (countdown_enabled .AND. countdown_column > 0) THEN
+            WRITE(*, '(A)') ''
+            CALL FLUSH(OUTPUT_UNIT)
+        END IF
+        timer_enabled = .FALSE.
+        countdown_enabled = .FALSE.
+    END SUBROUTINE finish_search_timer
+
+    REAL FUNCTION elapsed_search_seconds() RESULT(elapsed_seconds)
+        INTEGER(KIND=8) :: current_count
+
+        elapsed_seconds = 0.0
+        IF (.NOT. timer_enabled) RETURN
+        CALL SYSTEM_CLOCK(current_count)
+        IF (search_count_rate > 0) THEN
+            elapsed_seconds = REAL(current_count - search_start_count) / REAL(search_count_rate)
+        END IF
+    END FUNCTION elapsed_search_seconds
+
+    SUBROUTINE maybe_print_countdown(force)
+        LOGICAL, INTENT(IN), OPTIONAL :: force
+        LOGICAL :: do_force
+        INTEGER :: remaining_seconds, token_len
+        CHARACTER(LEN=16) :: token_text
+
+        do_force = .FALSE.
+        IF (PRESENT(force)) do_force = force
+        IF (.NOT. countdown_enabled .OR. .NOT. timer_enabled) RETURN
+
+        remaining_seconds = MAX(0, CEILING(search_time_limit_seconds - elapsed_search_seconds()))
+        IF (.NOT. do_force .AND. remaining_seconds == last_countdown_second) RETURN
+
+        last_countdown_second = remaining_seconds
+        WRITE(token_text, '(I0)') remaining_seconds
+        token_len = LEN_TRIM(token_text)
+
+        IF (countdown_column == 0) THEN
+            WRITE(*, '(A)', ADVANCE='NO') TRIM(token_text)
+            countdown_column = token_len
+        ELSE IF (countdown_column + 1 + token_len > 80) THEN
+            WRITE(*, '(A)') ''
+            WRITE(*, '(A)', ADVANCE='NO') TRIM(token_text)
+            countdown_column = token_len
+        ELSE
+            WRITE(*, '(A)', ADVANCE='NO') ' ' // TRIM(token_text)
+            countdown_column = countdown_column + 1 + token_len
+        END IF
+        CALL FLUSH(OUTPUT_UNIT)
+    END SUBROUTINE maybe_print_countdown
+
+    LOGICAL FUNCTION check_search_time() RESULT(limit_reached)
+        limit_reached = .FALSE.
+        IF (.NOT. timer_enabled) RETURN
+
+        nodes_since_time_check = nodes_since_time_check + 1
+        IF (nodes_since_time_check < TIME_CHECK_INTERVAL) RETURN
+        nodes_since_time_check = 0
+
+        CALL maybe_print_countdown()
+        IF (elapsed_search_seconds() >= search_time_limit_seconds) THEN
+            search_timed_out = .TRUE.
+            limit_reached = .TRUE.
+        END IF
+    END FUNCTION check_search_time
 
     ! --- Quiescence Search ---
     RECURSIVE INTEGER FUNCTION quiescence(board, alpha, beta) RESULT(score)
@@ -37,6 +137,11 @@ CONTAINS
         TYPE(UnmakeInfo_Type) :: unmake_info
 
         current_alpha = alpha
+
+        IF (check_search_time()) THEN
+            score = evaluate_board(board)
+            RETURN
+        END IF
 
         stand_pat = evaluate_board(board)
 
@@ -57,6 +162,11 @@ CONTAINS
             CALL make_move(board, current_move, unmake_info)
             score = -quiescence(board, -beta, -current_alpha)
             CALL unmake_move(board, current_move, unmake_info)
+
+            IF (search_timed_out) THEN
+                score = current_alpha
+                RETURN
+            END IF
 
             IF (score >= beta) THEN
                 score = beta
@@ -100,7 +210,7 @@ CONTAINS
         INTEGER, INTENT(IN) :: depth_param ! Original depth (input only)
         INTEGER, INTENT(IN) :: ply
         INTEGER, INTENT(INOUT) :: alpha, beta ! alpha and beta are modified by TT lookups
-        INTEGER :: score, current_alpha = -INF, next_alpha, next_beta
+        INTEGER :: score, current_alpha, next_alpha, next_beta, alpha_orig
         TYPE(Move_Type), DIMENSION(MAX_MOVES) :: moves
         INTEGER :: num_moves, i
         TYPE(Move_Type) :: current_move, best_move_here
@@ -117,12 +227,19 @@ CONTAINS
 
         current_depth = depth_param
 
+        IF (check_search_time()) THEN
+            best_score = evaluate_board(board)
+            RETURN
+        END IF
+
         ! --- Transposition Table Lookup ---
         tt_hit = probe_tt(board%zobrist_key, depth_param, alpha, beta, tt_entry)
         IF (tt_hit) THEN
             best_score = tt_entry%score
             RETURN
         END IF
+        alpha_orig = alpha
+        current_alpha = alpha
 
         ! Base case: evaluate position when search depth is reached
         IF (current_depth <= 0) THEN
@@ -163,6 +280,11 @@ CONTAINS
             board%ep_target_sq = prev_ep_sq
             board%zobrist_key = prev_key
 
+            IF (search_timed_out) THEN
+                best_score = current_alpha
+                RETURN
+            END IF
+
             ! If the null move search causes a beta cutoff, we can prune this node
             IF (score >= beta) THEN
                 best_score = beta
@@ -199,7 +321,7 @@ CONTAINS
         END IF
 
         ! Order moves
-        CALL order_moves(board, moves, num_moves)
+        CALL order_moves_with_killers(board, moves, num_moves, ply)
 
         ! Initialize best score to worst possible outcome
         best_score = -INF
@@ -220,6 +342,11 @@ CONTAINS
 
             ! Undo the move to restore board state
             CALL unmake_move(board, current_move, unmake_info)
+
+            IF (search_timed_out) THEN
+                best_score = current_alpha
+                RETURN
+            END IF
 
             ! Update best score found so far
             IF (score > best_score) THEN
@@ -250,7 +377,7 @@ CONTAINS
 
         ! --- Store result in Transposition Table ---
         IF (best_move_here%from_sq%rank /= 0) THEN
-            IF (best_score <= alpha) THEN ! Upper bound
+            IF (best_score <= alpha_orig) THEN ! Upper bound
                 CALL store_tt_entry(board%zobrist_key, depth_param, best_score, HASH_FLAG_ALPHA, best_move_here)
             ELSE ! Exact score
                 CALL store_tt_entry(board%zobrist_key, depth_param, best_score, HASH_FLAG_EXACT, best_move_here)
@@ -276,12 +403,14 @@ CONTAINS
     ! Side effects:
     !   Temporarily modifies the board during search (restored via make/unmake)
     !   May take significant time for deep searches
-    SUBROUTINE find_best_move(board, max_depth, best_move_found, best_move, best_score_out)
+    SUBROUTINE find_best_move(board, max_depth, best_move_found, best_move, best_score_out, time_limit_seconds, show_countdown)
         TYPE(Board_Type), INTENT(INOUT) :: board
         INTEGER, INTENT(IN) :: max_depth
         LOGICAL, INTENT(OUT) :: best_move_found
         TYPE(Move_Type), INTENT(OUT) :: best_move
         INTEGER, INTENT(OUT), OPTIONAL :: best_score_out
+        REAL, INTENT(IN), OPTIONAL :: time_limit_seconds
+        LOGICAL, INTENT(IN), OPTIONAL :: show_countdown
 
         TYPE(Move_Type), DIMENSION(MAX_MOVES) :: moves
         INTEGER :: num_moves, i, d
@@ -289,14 +418,16 @@ CONTAINS
         TYPE(Move_Type) :: current_move
         TYPE(UnmakeInfo_Type) :: unmake_info
         INTEGER :: aspiration_delta
-        LOGICAL :: research_needed
-        INTEGER :: last_iteration_score
-        INTEGER :: start_count, count_rate
+        LOGICAL :: research_needed, iteration_completed, completed_move_found
+        INTEGER :: last_iteration_score, completed_best_score
+        TYPE(Move_Type) :: completed_best_move
 
         best_move_found = .FALSE.
         best_score_so_far = -INF
+        completed_best_score = -INF
         last_iteration_score = 0 ! Initialize
-        CALL SYSTEM_CLOCK(start_count, count_rate)
+        completed_move_found = .FALSE.
+        CALL start_search_timer(time_limit_seconds, show_countdown)
 
         ! Aspiration window delta
         aspiration_delta = 50 ! Centipawns
@@ -311,14 +442,19 @@ CONTAINS
 
         ! No legal moves available
         IF (num_moves == 0) THEN
+             CALL finish_search_timer()
              RETURN
         END IF
+        best_move = moves(1)
 
         ! Iterative Deepening Loop
         DO d = 1, max_depth
+            IF (search_timed_out) EXIT
             research_needed = .TRUE.
             DO WHILE (research_needed)
+                IF (search_timed_out) EXIT
                 research_needed = .FALSE. ! Assume no re-search needed unless bounds fail
+                iteration_completed = .TRUE.
 
                 IF (d == 1) THEN ! First iteration, full window
                     alpha = -INF
@@ -350,6 +486,11 @@ CONTAINS
                     ! Undo the move
                     CALL unmake_move(board, current_move, unmake_info)
 
+                    IF (search_timed_out) THEN
+                        iteration_completed = .FALSE.
+                        EXIT
+                    END IF
+
                     ! Check if this move is better than previous best for this iteration
                     IF (score > best_score_so_far) THEN
                          best_score_so_far = score
@@ -362,6 +503,8 @@ CONTAINS
                          alpha = best_score_so_far
                     END IF
                 END DO
+
+                IF (.NOT. iteration_completed) EXIT
 
                 ! --- Check Aspiration Window Failure ---
                 IF (d /= 1) THEN ! Only check for aspiration failures after first iteration
@@ -379,9 +522,14 @@ CONTAINS
                 END IF
 
             END DO ! End DO WHILE (research_needed)
+            IF (search_timed_out) EXIT
+            IF (.NOT. iteration_completed) EXIT
 
             ! Store score for next iteration's aspiration window
             last_iteration_score = best_score_so_far
+            completed_best_score = best_score_so_far
+            completed_best_move = best_move
+            completed_move_found = best_move_found
             ! (Info printing handled by caller; stats available via optional outputs)
 
             ! Move ordering for the next iteration: move the best move from this iteration to the front
@@ -395,6 +543,15 @@ CONTAINS
             END DO
 
         END DO
+
+        IF (search_timed_out .AND. completed_move_found) THEN
+            best_move = completed_best_move
+            best_move_found = .TRUE.
+            best_score_so_far = completed_best_score
+        END IF
+
+        CALL maybe_print_countdown()
+        CALL finish_search_timer()
 
         IF (PRESENT(best_score_out)) best_score_out = best_score_so_far
 
