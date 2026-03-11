@@ -1,9 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "TARGET_REMOTE=%~1"
-if not defined TARGET_REMOTE set "TARGET_REMOTE=origin"
-
 pushd "%~dp0" >nul 2>&1
 if errorlevel 1 (
     echo Failed to enter the repository directory.
@@ -24,8 +21,24 @@ if not defined CURRENT_BRANCH (
     exit /b 1
 )
 
+set "TARGET_REMOTE=%~1"
+if not defined TARGET_REMOTE (
+    git remote get-url github-beliavsky >nul 2>&1
+    if errorlevel 1 (
+        set "TARGET_REMOTE=origin"
+    ) else (
+        set "TARGET_REMOTE=github-beliavsky"
+    )
+)
+
 set "TARGET_BRANCH=%~2"
-if not defined TARGET_BRANCH set "TARGET_BRANCH=%CURRENT_BRANCH%"
+if not defined TARGET_BRANCH (
+    if /I "%TARGET_REMOTE%"=="github-beliavsky" (
+        set "TARGET_BRANCH=main"
+    ) else (
+        set "TARGET_BRANCH=%CURRENT_BRANCH%"
+    )
+)
 
 echo Current branch: %CURRENT_BRANCH%
 echo Target remote:  %TARGET_REMOTE%
