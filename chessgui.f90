@@ -728,7 +728,7 @@ CONTAINS
         TYPE(c_ptr) :: light_brush, dark_brush, background_brush, graphics
         INTEGER(c_int) :: ignored_int
         INTEGER(c_long) :: ignored_color
-        INTEGER :: rank, file, color_idx, piece_idx
+        INTEGER :: rank, file, board_rank, board_file, color_idx, piece_idx
         CHARACTER(LEN=1) :: piece_char
         CHARACTER(KIND=c_char), DIMENSION(2), TARGET :: piece_text
 
@@ -758,15 +758,24 @@ CONTAINS
                 square_rect%top = INT(BOARD_TOP + (8 - rank) * SQUARE_PIXELS, c_long)
                 square_rect%right = square_rect%left + SQUARE_PIXELS
                 square_rect%bottom = square_rect%top + SQUARE_PIXELS
+
+                IF (gui_human_color == WHITE) THEN
+                    board_rank = rank
+                    board_file = file
+                ELSE
+                    board_rank = 9 - rank
+                    board_file = 9 - file
+                END IF
+
                 IF (MOD(rank + file, 2) == 1) THEN
                     ignored_int = FillRect(device_context, square_rect, light_brush)
                 ELSE
                     ignored_int = FillRect(device_context, square_rect, dark_brush)
                 END IF
 
-                piece_idx = gui_board%squares_piece(rank, file)
+                piece_idx = gui_board%squares_piece(board_rank, board_file)
                 IF (piece_idx == NO_PIECE) CYCLE
-                IF (gui_board%squares_color(rank, file) == WHITE) THEN
+                IF (gui_board%squares_color(board_rank, board_file) == WHITE) THEN
                     color_idx = 1
                 ELSE
                     color_idx = 2
@@ -777,10 +786,10 @@ CONTAINS
                         INT(square_rect%left, c_int) + 6_c_int, INT(square_rect%top, c_int) + 6_c_int, &
                         SQUARE_PIXELS - 12_c_int, SQUARE_PIXELS - 12_c_int)
                 ELSE
-                    piece_char = board_piece_char(gui_board, rank, file)
+                    piece_char = board_piece_char(gui_board, board_rank, board_file)
                     piece_text(1) = ACHAR(IACHAR(piece_char), KIND=c_char)
                     piece_text(2) = c_null_char
-                    IF (gui_board%squares_color(rank, file) == WHITE) THEN
+                    IF (gui_board%squares_color(board_rank, board_file) == WHITE) THEN
                         ignored_color = SetTextColor(device_context, rgb_color(252, 252, 252))
                     ELSE
                         ignored_color = SetTextColor(device_context, rgb_color(20, 20, 20))

@@ -73,10 +73,3 @@
 
 ! Caro-Kann
 1.e4 c6 2.d4 d5 3.exd5 cxd5 4.c4 Nf6 5.Nc3
-
-
-
-
-
-
-

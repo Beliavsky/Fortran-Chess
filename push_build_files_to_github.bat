@@ -52,6 +52,7 @@ call :stage_if_exists "Makefile"
 call :stage_if_exists "README.md"
 call :stage_if_exists "%~nx0"
 call :stage_if_exists "upload_needed_files_to_github.bat"
+call :stage_if_exists "refresh_github.bat"
 
 for %%F in (*.f90) do (
     if exist "%%F" git add -- "%%F"
