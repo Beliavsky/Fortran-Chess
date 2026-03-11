@@ -23,6 +23,7 @@ MODULE Chess_Types
     INTEGER, PARAMETER :: GAME_ONGOING   = 0
     INTEGER, PARAMETER :: GAME_CHECKMATE = 1
     INTEGER, PARAMETER :: GAME_STALEMATE = 2
+    INTEGER, PARAMETER :: GAME_THREEFOLD_REPETITION = 3
     INTEGER, PARAMETER :: NO_WINNER      = 0 ! Can be used with Game Status to indicate draw
 
     ! --- Constants for Piece Values (Centipawns) ---

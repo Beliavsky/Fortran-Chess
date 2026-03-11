@@ -8,6 +8,10 @@ MODULE Search
     USE Move_Generation, ONLY: generate_moves, generate_captures, order_moves
     USE Make_Unmake
     USE Evaluation
+    USE Notation_Utils, ONLY: move_to_san, move_to_coordinate
+    USE Search_Debug_Log, ONLY: log_search_depth_start, log_search_root_candidate, &
+        log_search_aspiration_retry, log_search_depth_complete, log_search_timeout, &
+        log_search_final_choice
     USE, INTRINSIC :: ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
     USE Transposition_Table, ONLY: probe_tt, store_tt_entry, TT_Entry_Type, &
         HASH_FLAG_EXACT, HASH_FLAG_ALPHA, HASH_FLAG_BETA, new_search_generation, &
@@ -413,7 +417,7 @@ CONTAINS
         LOGICAL, INTENT(IN), OPTIONAL :: show_countdown
 
         TYPE(Move_Type), DIMENSION(MAX_MOVES) :: moves
-        INTEGER :: num_moves, i, d
+        INTEGER :: num_moves, i, d, attempt_number
         INTEGER :: score, best_score_so_far, alpha, beta, next_alpha, next_beta
         TYPE(Move_Type) :: current_move
         TYPE(UnmakeInfo_Type) :: unmake_info
@@ -421,6 +425,8 @@ CONTAINS
         LOGICAL :: research_needed, iteration_completed, completed_move_found
         INTEGER :: last_iteration_score, completed_best_score
         TYPE(Move_Type) :: completed_best_move
+        CHARACTER(LEN=32) :: move_text
+        CHARACTER(LEN=8) :: coord_text
 
         best_move_found = .FALSE.
         best_score_so_far = -INF
@@ -451,8 +457,10 @@ CONTAINS
         DO d = 1, max_depth
             IF (search_timed_out) EXIT
             research_needed = .TRUE.
+            attempt_number = 0
             DO WHILE (research_needed)
                 IF (search_timed_out) EXIT
+                attempt_number = attempt_number + 1
                 research_needed = .FALSE. ! Assume no re-search needed unless bounds fail
                 iteration_completed = .TRUE.
 
@@ -470,6 +478,7 @@ CONTAINS
                 
                 ! Re-initialize best score for the current search (may be part of a re-search)
                 best_score_so_far = -INF
+                CALL log_search_depth_start(d, attempt_number, alpha, beta)
                 
                 ! Evaluate each possible move at the current depth
                 DO i = 1, num_moves
@@ -488,8 +497,13 @@ CONTAINS
 
                     IF (search_timed_out) THEN
                         iteration_completed = .FALSE.
+                        CALL log_search_timeout(d, attempt_number)
                         EXIT
                     END IF
+
+                    move_text = move_to_san(board, current_move, moves, num_moves)
+                    coord_text = move_to_coordinate(current_move)
+                    CALL log_search_root_candidate(d, attempt_number, move_text, coord_text, score)
 
                     ! Check if this move is better than previous best for this iteration
                     IF (score > best_score_so_far) THEN
@@ -509,11 +523,13 @@ CONTAINS
                 ! --- Check Aspiration Window Failure ---
                 IF (d /= 1) THEN ! Only check for aspiration failures after first iteration
                     IF (best_score_so_far <= last_iteration_score - aspiration_delta) THEN ! Fail low
+                        CALL log_search_aspiration_retry(d, attempt_number, 'fail-low', best_score_so_far)
                         alpha = -INF
                         beta = last_iteration_score + aspiration_delta
                         research_needed = .TRUE.
                         aspiration_delta = aspiration_delta + 50 ! Widen window for next try
                     ELSE IF (best_score_so_far >= last_iteration_score + aspiration_delta) THEN ! Fail high
+                        CALL log_search_aspiration_retry(d, attempt_number, 'fail-high', best_score_so_far)
                         alpha = last_iteration_score - aspiration_delta
                         beta = INF
                         research_needed = .TRUE.
@@ -530,6 +546,9 @@ CONTAINS
             completed_best_score = best_score_so_far
             completed_best_move = best_move
             completed_move_found = best_move_found
+            move_text = move_to_san(board, best_move, moves, num_moves)
+            coord_text = move_to_coordinate(best_move)
+            CALL log_search_depth_complete(d, attempt_number, move_text, coord_text, best_score_so_far)
             ! (Info printing handled by caller; stats available via optional outputs)
 
             ! Move ordering for the next iteration: move the best move from this iteration to the front
@@ -548,6 +567,12 @@ CONTAINS
             best_move = completed_best_move
             best_move_found = .TRUE.
             best_score_so_far = completed_best_score
+        END IF
+
+        IF (best_move_found) THEN
+            move_text = move_to_san(board, best_move, moves, num_moves)
+            coord_text = move_to_coordinate(best_move)
+            CALL log_search_final_choice(move_text, coord_text, best_score_so_far, search_timed_out, completed_move_found)
         END IF
 
         CALL maybe_print_countdown()

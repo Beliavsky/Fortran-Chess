@@ -9,13 +9,17 @@ MODULE Opening_Sequence
 
 CONTAINS
 
-    SUBROUTINE load_opening_sequence(filename, board, move_history, num_half_moves, loaded_ok, error_message)
+    SUBROUTINE load_opening_sequence(filename, board, move_history, num_half_moves, loaded_ok, error_message, &
+        move_stack, unmake_stack, position_key_history)
         CHARACTER(LEN=*), INTENT(IN) :: filename
         TYPE(Board_Type), INTENT(INOUT) :: board
         CHARACTER(LEN=*), DIMENSION(:), INTENT(INOUT) :: move_history
         INTEGER, INTENT(INOUT) :: num_half_moves
         LOGICAL, INTENT(OUT) :: loaded_ok
         CHARACTER(LEN=*), INTENT(OUT) :: error_message
+        TYPE(Move_Type), DIMENSION(:), INTENT(INOUT), OPTIONAL :: move_stack
+        TYPE(UnmakeInfo_Type), DIMENSION(:), INTENT(INOUT), OPTIONAL :: unmake_stack
+        INTEGER(KIND=8), DIMENSION(:), INTENT(INOUT), OPTIONAL :: position_key_history
 
         INTEGER, PARAMETER :: MAX_LINE_TOKENS = 64
         INTEGER :: unit_no, ios, line_no, token_idx, i
@@ -95,6 +99,9 @@ CONTAINS
                 num_half_moves = num_half_moves + 1
                 move_history(num_half_moves) = TRIM(san_text)
                 CALL make_move(board, chosen_move, move_info)
+                IF (PRESENT(move_stack)) move_stack(num_half_moves) = chosen_move
+                IF (PRESENT(unmake_stack)) unmake_stack(num_half_moves) = move_info
+                IF (PRESENT(position_key_history)) position_key_history(num_half_moves + 1) = board%zobrist_key
             END DO
         END DO
 

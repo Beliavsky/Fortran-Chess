@@ -224,11 +224,13 @@ CONTAINS
                    TRIM(normalized_input) == TRIM(normalized_coord))
     END FUNCTION move_matches_input
 
-    SUBROUTINE write_pgn_file(filename, move_history, num_half_moves, result_text)
+    SUBROUTINE write_pgn_file(filename, move_history, num_half_moves, result_text, move_elapsed_ms_history, time_control_tag)
         CHARACTER(LEN=*), INTENT(IN) :: filename
         CHARACTER(LEN=*), DIMENSION(:), INTENT(IN) :: move_history
         INTEGER, INTENT(IN) :: num_half_moves
         CHARACTER(LEN=*), INTENT(IN) :: result_text
+        INTEGER(KIND=8), DIMENSION(:), INTENT(IN), OPTIONAL :: move_elapsed_ms_history
+        CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: time_control_tag
 
         INTEGER :: unit_no, i, values(8), current_len, token_len
         CHARACTER(LEN=10) :: date_tag
@@ -246,14 +248,17 @@ CONTAINS
         WRITE(unit_no, '(A)') '[White "Human"]'
         WRITE(unit_no, '(A)') '[Black "Computer"]'
         WRITE(unit_no, '(A,A,A)') '[Result "', TRIM(result_text), '"]'
+        IF (PRESENT(time_control_tag)) THEN
+            WRITE(unit_no, '(A,A,A)') '[TimeControl "', TRIM(time_control_tag), '"]'
+        END IF
         WRITE(unit_no, '(A)') ''
 
         current_line = ''
         current_len = 0
         DO i = 1, num_half_moves, 2
-            WRITE(token_text, '(I0,A,A)') (i + 1) / 2, '. ', TRIM(move_history(i))
+            WRITE(token_text, '(I0,A,A)') (i + 1) / 2, '. ', TRIM(annotated_move_text(move_history(i), i, move_elapsed_ms_history))
             IF (i + 1 <= num_half_moves) THEN
-                token_text = TRIM(token_text) // ' ' // TRIM(move_history(i + 1))
+                token_text = TRIM(token_text) // ' ' // TRIM(annotated_move_text(move_history(i + 1), i + 1, move_elapsed_ms_history))
             END IF
             token_len = LEN_TRIM(token_text)
 
@@ -285,5 +290,37 @@ CONTAINS
         WRITE(unit_no, '(A)') ''
         CLOSE(unit_no)
     END SUBROUTINE write_pgn_file
+
+    FUNCTION annotated_move_text(move_text, move_index, move_elapsed_ms_history) RESULT(text)
+        CHARACTER(LEN=*), INTENT(IN) :: move_text
+        INTEGER, INTENT(IN) :: move_index
+        INTEGER(KIND=8), DIMENSION(:), INTENT(IN), OPTIONAL :: move_elapsed_ms_history
+        CHARACTER(LEN=96) :: text
+
+        text = TRIM(move_text)
+        IF (.NOT. PRESENT(move_elapsed_ms_history)) RETURN
+        IF (move_index > SIZE(move_elapsed_ms_history)) RETURN
+        IF (move_elapsed_ms_history(move_index) < 0_8) RETURN
+
+        text = TRIM(move_text) // ' {' // TRIM(format_elapsed_time(move_elapsed_ms_history(move_index))) // '}'
+    END FUNCTION annotated_move_text
+
+    FUNCTION format_elapsed_time(elapsed_ms) RESULT(text)
+        INTEGER(KIND=8), INTENT(IN) :: elapsed_ms
+        CHARACTER(LEN=16) :: text
+        INTEGER(KIND=8) :: total_seconds, hours, minutes, seconds
+
+        total_seconds = MAX(0_8, (elapsed_ms + 500_8) / 1000_8)
+        hours = total_seconds / 3600_8
+        minutes = MOD(total_seconds, 3600_8) / 60_8
+        seconds = MOD(total_seconds, 60_8)
+        IF (hours > 0_8) THEN
+            WRITE(text, '(I0,A,I2.2,A,I2.2,A)') hours, 'h', minutes, 'm', seconds, 's'
+        ELSE IF (minutes > 0_8) THEN
+            WRITE(text, '(I0,A,I2.2,A)') minutes, 'm', seconds, 's'
+        ELSE
+            WRITE(text, '(I0,A)') seconds, 's'
+        END IF
+    END FUNCTION format_elapsed_time
 
 END MODULE Notation_Utils

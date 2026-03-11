@@ -3,7 +3,7 @@ MODULE Opening_Book
     USE Notation_Utils, ONLY: normalize_move_text, move_matches_input
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Opening_Book_Type, load_opening_book, choose_book_move
+    PUBLIC :: Opening_Book_Type, load_opening_book, choose_book_move, apply_opening_book_fix
 
     INTEGER, PARAMETER :: MAX_BOOK_LINES = 512
     INTEGER, PARAMETER :: MAX_BOOK_MOVES = 256
@@ -17,6 +17,8 @@ MODULE Opening_Book
         CHARACTER(LEN=260) :: filename = ''
         CHARACTER(LEN=256) :: error_message = ''
         CHARACTER(LEN=256) :: suggestion = ''
+        CHARACTER(LEN=512) :: error_text = ''
+        CHARACTER(LEN=512) :: replacement_line = ''
         INTEGER, ALLOCATABLE, DIMENSION(:) :: line_lengths
         CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:, :) :: lines
     END TYPE Opening_Book_Type
@@ -34,6 +36,7 @@ CONTAINS
         CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:, :) :: temp_lines
         INTEGER :: parsed_count
         CHARACTER(LEN=256) :: err_msg, suggestion
+        CHARACTER(LEN=512) :: replacement_line
         LOGICAL :: exists
 
         book%found = .FALSE.
@@ -43,6 +46,8 @@ CONTAINS
         book%filename = filename
         book%error_message = ''
         book%suggestion = ''
+        book%error_text = ''
+        book%replacement_line = ''
         prev_len = 0
         prev_sequence = ''
 
@@ -75,11 +80,13 @@ CONTAINS
             IF (LEN_TRIM(trimmed_line) == 0) CYCLE
             IF (trimmed_line(1:1) == '!' .OR. trimmed_line(1:1) == '#') CYCLE
 
-            CALL parse_book_line(trimmed_line, parsed_moves, parsed_count, line_start, err_msg, suggestion)
+            CALL parse_book_line(trimmed_line, parsed_moves, parsed_count, line_start, err_msg, suggestion, replacement_line)
             IF (LEN_TRIM(err_msg) /= 0) THEN
                 book%error_line = line_no
                 book%error_message = err_msg
                 book%suggestion = suggestion
+                book%error_text = TRIM(raw_line)
+                book%replacement_line = replacement_line
                 CLOSE(unit_no)
                 DEALLOCATE(temp_lengths, temp_lines)
                 RETURN
@@ -90,6 +97,8 @@ CONTAINS
                     book%error_line = line_no
                     book%error_message = 'The first book line must start at move 1.'
                     book%suggestion = 'Start the line with `1.e4` or `1.d4`.'
+                    book%error_text = TRIM(raw_line)
+                    book%replacement_line = build_book_line(parsed_moves, parsed_count, 1)
                     CLOSE(unit_no)
                     DEALLOCATE(temp_lengths, temp_lines)
                     RETURN
@@ -105,6 +114,8 @@ CONTAINS
                     book%error_line = line_no
                     book%error_message = 'Line starts too late to be a continuation or variation.'
                     book%suggestion = 'Use `' // TRIM(halfmove_marker(next_expected)) // '` to continue, or restart from an earlier move to branch.'
+                    book%error_text = TRIM(raw_line)
+                    book%replacement_line = build_book_line(parsed_moves, parsed_count, next_expected)
                     CLOSE(unit_no)
                     DEALLOCATE(temp_lengths, temp_lines)
                     RETURN
@@ -116,6 +127,7 @@ CONTAINS
                 book%error_line = line_no
                 book%error_message = 'Book line is too long.'
                 book%suggestion = 'Increase structure depth by splitting into shorter variations.'
+                book%error_text = TRIM(raw_line)
                 CLOSE(unit_no)
                 DEALLOCATE(temp_lengths, temp_lines)
                 RETURN
@@ -124,6 +136,7 @@ CONTAINS
                 book%error_line = line_no
                 book%error_message = 'Too many book lines for current fixed storage.'
                 book%suggestion = 'Reduce the book size or raise MAX_BOOK_LINES in opening_book.f90.'
+                book%error_text = TRIM(raw_line)
                 CLOSE(unit_no)
                 DEALLOCATE(temp_lengths, temp_lines)
                 RETURN
@@ -152,6 +165,93 @@ CONTAINS
         END IF
         DEALLOCATE(temp_lengths, temp_lines)
     END SUBROUTINE load_opening_book
+
+    SUBROUTINE apply_opening_book_fix(book, success, error_message)
+        TYPE(Opening_Book_Type), INTENT(IN) :: book
+        LOGICAL, INTENT(OUT) :: success
+        CHARACTER(LEN=*), INTENT(OUT) :: error_message
+
+        INTEGER :: unit_no, ios, line_count, i
+        CHARACTER(LEN=512) :: raw_line
+        CHARACTER(LEN=512), ALLOCATABLE, DIMENSION(:) :: file_lines
+
+        success = .FALSE.
+        error_message = ''
+
+        IF (.NOT. book%found) THEN
+            error_message = 'Opening book file was not found.'
+            RETURN
+        END IF
+        IF (book%error_line <= 0) THEN
+            error_message = 'No editable error line is available.'
+            RETURN
+        END IF
+        IF (LEN_TRIM(book%replacement_line) == 0) THEN
+            error_message = 'No automatic fix is available for this error.'
+            RETURN
+        END IF
+
+        unit_no = 42
+        OPEN(unit=unit_no, file=book%filename, status='OLD', action='READ', iostat=ios)
+        IF (ios /= 0) THEN
+            error_message = 'Could not reopen the opening book for reading.'
+            RETURN
+        END IF
+
+        line_count = 0
+        DO
+            READ(unit_no, '(A)', IOSTAT=ios) raw_line
+            IF (ios /= 0) EXIT
+            line_count = line_count + 1
+        END DO
+        CLOSE(unit_no)
+
+        IF (book%error_line > line_count) THEN
+            error_message = 'The saved error line no longer exists in the file.'
+            RETURN
+        END IF
+
+        ALLOCATE(file_lines(line_count))
+        OPEN(unit=unit_no, file=book%filename, status='OLD', action='READ', iostat=ios)
+        IF (ios /= 0) THEN
+            error_message = 'Could not reopen the opening book for editing.'
+            DEALLOCATE(file_lines)
+            RETURN
+        END IF
+
+        DO i = 1, line_count
+            READ(unit_no, '(A)', IOSTAT=ios) file_lines(i)
+            IF (ios /= 0) THEN
+                error_message = 'Could not read the full opening book while applying the fix.'
+                CLOSE(unit_no)
+                DEALLOCATE(file_lines)
+                RETURN
+            END IF
+        END DO
+        CLOSE(unit_no)
+
+        file_lines(book%error_line) = TRIM(book%replacement_line)
+
+        OPEN(unit=unit_no, file=book%filename, status='REPLACE', action='WRITE', iostat=ios)
+        IF (ios /= 0) THEN
+            error_message = 'Could not overwrite the opening book with the proposed fix.'
+            DEALLOCATE(file_lines)
+            RETURN
+        END IF
+
+        DO i = 1, line_count
+            WRITE(unit_no, '(A)', IOSTAT=ios) TRIM(file_lines(i))
+            IF (ios /= 0) THEN
+                error_message = 'Failed while writing the updated opening book.'
+                CLOSE(unit_no)
+                DEALLOCATE(file_lines)
+                RETURN
+            END IF
+        END DO
+        CLOSE(unit_no)
+        DEALLOCATE(file_lines)
+        success = .TRUE.
+    END SUBROUTINE apply_opening_book_fix
 
     LOGICAL FUNCTION choose_book_move(book, move_history, num_half_moves, board, legal_moves, num_legal_moves, chosen_move, chosen_text) RESULT(found)
         TYPE(Opening_Book_Type), INTENT(IN) :: book
@@ -235,14 +335,15 @@ CONTAINS
         history_matches_prefix = .TRUE.
     END FUNCTION history_matches_prefix
 
-    SUBROUTINE parse_book_line(line_text, parsed_moves, parsed_count, line_start, err_msg, suggestion)
+    SUBROUTINE parse_book_line(line_text, parsed_moves, parsed_count, line_start, err_msg, suggestion, replacement_line)
         CHARACTER(LEN=*), INTENT(IN) :: line_text
         CHARACTER(LEN=32), DIMENSION(MAX_BOOK_MOVES), INTENT(OUT) :: parsed_moves
         INTEGER, INTENT(OUT) :: parsed_count, line_start
         CHARACTER(LEN=256), INTENT(OUT) :: err_msg, suggestion
+        CHARACTER(LEN=512), INTENT(OUT) :: replacement_line
 
         CHARACTER(LEN=64) :: token, move_text
-        INTEGER :: pos, line_len, token_len, current_halfmove, token_halfmove
+        INTEGER :: pos, line_len, token_len, current_halfmove, token_halfmove, token_start, token_end
         LOGICAL :: has_number
 
         parsed_moves = ''
@@ -250,6 +351,7 @@ CONTAINS
         line_start = 0
         err_msg = ''
         suggestion = ''
+        replacement_line = ''
         current_halfmove = 0
         pos = 1
         line_len = LEN_TRIM(line_text)
@@ -260,11 +362,13 @@ CONTAINS
             END DO
             IF (pos > line_len) EXIT
 
+            token_start = pos
             token_len = pos
             DO WHILE (token_len <= line_len)
                 IF (line_text(token_len:token_len) == ' ') EXIT
                 token_len = token_len + 1
             END DO
+            token_end = token_len - 1
             token = line_text(pos:token_len - 1)
             pos = token_len + 1
 
@@ -278,6 +382,8 @@ CONTAINS
                 ELSE IF (token_halfmove /= current_halfmove) THEN
                     err_msg = 'Move number does not match the implied sequence on this line.'
                     suggestion = 'Use `' // TRIM(halfmove_marker(current_halfmove)) // '` here, or remove the repeated move number.'
+                    replacement_line = replace_token_in_line(line_text, token_start, token_end, &
+                        TRIM(halfmove_marker(current_halfmove)) // TRIM(move_text))
                     RETURN
                 END IF
                 IF (LEN_TRIM(move_text) == 0) CYCLE
@@ -383,5 +489,42 @@ CONTAINS
             WRITE(marker, '(I0,A)') move_number, '...'
         END IF
     END FUNCTION halfmove_marker
+
+    FUNCTION build_book_line(parsed_moves, parsed_count, start_halfmove) RESULT(line_text)
+        CHARACTER(LEN=32), DIMENSION(MAX_BOOK_MOVES), INTENT(IN) :: parsed_moves
+        INTEGER, INTENT(IN) :: parsed_count, start_halfmove
+        CHARACTER(LEN=512) :: line_text
+        INTEGER :: i
+
+        line_text = ''
+        IF (parsed_count <= 0) RETURN
+
+        line_text = TRIM(halfmove_marker(start_halfmove)) // TRIM(parsed_moves(1))
+        DO i = 2, parsed_count
+            line_text = TRIM(line_text) // ' ' // TRIM(parsed_moves(i))
+        END DO
+    END FUNCTION build_book_line
+
+    FUNCTION replace_token_in_line(line_text, token_start, token_end, replacement_token) RESULT(updated_line)
+        CHARACTER(LEN=*), INTENT(IN) :: line_text, replacement_token
+        INTEGER, INTENT(IN) :: token_start, token_end
+        CHARACTER(LEN=512) :: updated_line
+        INTEGER :: line_len
+
+        updated_line = ''
+        line_len = LEN_TRIM(line_text)
+
+        IF (token_start <= 1) THEN
+            IF (token_end < line_len) THEN
+                updated_line = TRIM(replacement_token) // line_text(token_end + 1:line_len)
+            ELSE
+                updated_line = TRIM(replacement_token)
+            END IF
+        ELSE IF (token_end < line_len) THEN
+            updated_line = line_text(1:token_start - 1) // TRIM(replacement_token) // line_text(token_end + 1:line_len)
+        ELSE
+            updated_line = line_text(1:token_start - 1) // TRIM(replacement_token)
+        END IF
+    END FUNCTION replace_token_in_line
 
 END MODULE Opening_Book

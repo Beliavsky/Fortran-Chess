@@ -23,6 +23,8 @@ PROGRAM Fortran_Chess
 
     TYPE(Board_Type) :: game_board
     TYPE(Move_Type) :: chosen_move
+    TYPE(Move_Type), DIMENSION(512) :: played_move_history
+    TYPE(UnmakeInfo_Type), DIMENSION(512) :: unmake_history
     TYPE(UnmakeInfo_Type) :: move_info ! Needed for make_move call
     LOGICAL :: move_found, is_human_turn, game_over
     INTEGER :: human_player_color, ai_player_color
@@ -36,6 +38,8 @@ PROGRAM Fortran_Chess
     LOGICAL :: uci_mode
     CHARACTER(LEN=32), DIMENSION(512) :: move_history
     INTEGER(KIND=8), DIMENSION(512) :: move_elapsed_ms_history
+    INTEGER(KIND=8), DIMENSION(512) :: white_time_before_move, black_time_before_move
+    INTEGER(KIND=8), DIMENSION(513) :: position_key_history
     INTEGER :: num_half_moves
     CHARACTER(LEN=32) :: move_text
     CHARACTER(LEN=7) :: pgn_result
@@ -53,6 +57,7 @@ PROGRAM Fortran_Chess
     INTEGER :: resignation_winner_color
     LOGICAL :: accept_resignation
     LOGICAL :: open_requested, opening_loaded
+    LOGICAL :: autoplay_requested, takeback_requested
     CHARACTER(LEN=260) :: opening_filename
     CHARACTER(LEN=256) :: opening_error
     LOGICAL :: time_control_enabled, game_lost_on_time
@@ -63,6 +68,8 @@ PROGRAM Fortran_Chess
     INTEGER :: resignation_attempts
     INTEGER, PARAMETER :: MAX_RESIGNATION_ATTEMPTS = 3
     REAL :: ai_time_budget_seconds
+    INTEGER :: takeback_count, takeback_index
+    CHARACTER(LEN=32) :: pgn_time_control_tag
 
     uci_mode = .FALSE.
     self_play_mode = .FALSE.
@@ -72,6 +79,9 @@ PROGRAM Fortran_Chess
     game_resigned = .FALSE.
     num_half_moves = 0
     move_elapsed_ms_history = -1_8
+    white_time_before_move = 0_8
+    black_time_before_move = 0_8
+    position_key_history = 0_8
     pgn_result = '*'
     current_game_status = GAME_ONGOING
     game_winner_color = NO_COLOR
@@ -83,6 +93,7 @@ PROGRAM Fortran_Chess
     increment_ms = 0
     time_forfeit_winner_color = NO_COLOR
     resignation_attempts = 0
+    pgn_time_control_tag = '-'
     open_requested = .FALSE.
     opening_filename = ''
     opening_error = ''
@@ -126,8 +137,10 @@ PROGRAM Fortran_Chess
     ! --- Initialize Zobrist Keys and Board ---
     CALL init_zobrist_keys()
     CALL init_board(game_board)
+    position_key_history(1) = game_board%zobrist_key
     IF (open_requested) THEN
-        CALL load_opening_sequence(opening_filename, game_board, move_history, num_half_moves, opening_loaded, opening_error)
+        CALL load_opening_sequence(opening_filename, game_board, move_history, num_half_moves, opening_loaded, opening_error, &
+            played_move_history, unmake_history, position_key_history)
         IF (.NOT. opening_loaded) THEN
             PRINT *, "Could not load opening sequence from " // TRIM(opening_filename)
             PRINT *, TRIM(opening_error)
@@ -170,10 +183,12 @@ PROGRAM Fortran_Chess
         settings_input = TRIM(ADJUSTL(to_lower_string(settings_input)))
         IF (LEN_TRIM(settings_input) == 0 .OR. settings_input == 'off' .OR. settings_input == 'none') THEN
             time_control_enabled = .FALSE.
+            pgn_time_control_tag = '-'
             EXIT
         ELSE IF (parse_time_control(settings_input, white_time_ms, increment_ms)) THEN
             time_control_enabled = .TRUE.
             black_time_ms = white_time_ms
+            pgn_time_control_tag = format_pgn_time_control_tag(white_time_ms, increment_ms)
             EXIT
         ELSE
             PRINT *, "Enter a time control like 3+2 or leave blank for none."
@@ -235,7 +250,7 @@ PROGRAM Fortran_Chess
     DO WHILE (.NOT. game_over)
 
         ! 1. Check Game Over
-        game_over = is_game_over(game_board, game_winner_color, current_game_status)
+        game_over = is_game_over(game_board, game_winner_color, current_game_status, position_key_history, num_half_moves + 1)
         IF (game_over) THEN
             SELECT CASE (current_game_status)
                 CASE (GAME_CHECKMATE)
@@ -246,6 +261,8 @@ PROGRAM Fortran_Chess
                     END IF
                 CASE (GAME_STALEMATE)
                     PRINT *, "=== STALEMATE! Draw. ==="
+                CASE (GAME_THREEFOLD_REPETITION)
+                    PRINT *, "=== THREEFOLD REPETITION! Draw. ==="
                 CASE DEFAULT
                     ! Should not happen
                     PRINT *, "Error: Unknown game over status."
@@ -270,14 +287,32 @@ PROGRAM Fortran_Chess
             CALL SYSTEM_CLOCK(turn_start_count)
             move_found = get_human_move(game_board, legal_moves, num_legal_moves, search_depth, move_history, &
                 num_half_moves, white_book, black_book, show_eval_after_ai, resign_enabled, resign_threshold_cp, &
-                chosen_move, game_over)
+                chosen_move, game_over, autoplay_requested, takeback_requested)
             CALL SYSTEM_CLOCK(turn_end_count)
             move_elapsed_ms = elapsed_milliseconds(turn_start_count, turn_end_count, count_rate)
             IF (time_control_enabled) elapsed_ms = move_elapsed_ms
 
             IF (game_over) EXIT ! Exit game loop if user quit
 
+            IF (autoplay_requested) THEN
+                self_play_mode = .TRUE.
+                human_player_color = NO_COLOR
+                ai_player_color = NO_COLOR
+                PRINT *, "Autoplay enabled."
+                CYCLE
+            END IF
+
+            IF (takeback_requested) THEN
+                CALL apply_console_takeback()
+                CYCLE
+            END IF
+
             IF (move_found) THEN
+                 takeback_index = num_half_moves + 1
+                 IF (takeback_index <= SIZE(move_history)) THEN
+                     white_time_before_move(takeback_index) = white_time_ms
+                     black_time_before_move(takeback_index) = black_time_ms
+                 END IF
                  IF (time_control_enabled) THEN
                      IF (.NOT. apply_clock_after_move(game_board%current_player, elapsed_ms, white_time_ms, black_time_ms, increment_ms)) THEN
                          game_lost_on_time = .TRUE.
@@ -294,6 +329,9 @@ PROGRAM Fortran_Chess
                  END IF
                  PRINT *, "You played ", TRIM(move_text)
                  CALL make_move(game_board, chosen_move, move_info)
+                 played_move_history(num_half_moves) = chosen_move
+                 unmake_history(num_half_moves) = move_info
+                 position_key_history(num_half_moves + 1) = game_board%zobrist_key
             END IF
 
         ELSE
@@ -358,6 +396,11 @@ PROGRAM Fortran_Chess
                 elapsed_ms = 0_8
             END IF
             IF (move_found) THEN
+                takeback_index = num_half_moves + 1
+                IF (takeback_index <= SIZE(move_history)) THEN
+                    white_time_before_move(takeback_index) = white_time_ms
+                    black_time_before_move(takeback_index) = black_time_ms
+                END IF
                 IF (time_control_enabled) THEN
                     IF (book_move_found) THEN
                         elapsed_ms = 0_8
@@ -378,6 +421,9 @@ PROGRAM Fortran_Chess
                 END IF
                 PRINT *, "Computer played ", TRIM(move_text)
                 CALL make_move(game_board, chosen_move, move_info)
+                played_move_history(num_half_moves) = chosen_move
+                unmake_history(num_half_moves) = move_info
+                position_key_history(num_half_moves + 1) = game_board%zobrist_key
                 IF (book_move_found) THEN
                     CALL finish_ai_turn_debug_log('Opening-book move played.')
                 ELSE
@@ -427,16 +473,65 @@ PROGRAM Fortran_Chess
             END IF
         CASE (GAME_STALEMATE)
             pgn_result = '1/2-1/2'
+        CASE (GAME_THREEFOLD_REPETITION)
+            pgn_result = '1/2-1/2'
         CASE DEFAULT
             pgn_result = '*'
         END SELECT
     END IF
 
-    CALL write_pgn_file('games.pgn', move_history, num_half_moves, pgn_result, move_elapsed_ms_history)
+    CALL write_pgn_file('games.pgn', move_history, num_half_moves, pgn_result, move_elapsed_ms_history, pgn_time_control_tag)
     PRINT *, "Saved game to games.pgn"
     PRINT *, "Game finished."
 
 CONTAINS
+
+    SUBROUTINE apply_console_takeback()
+        INTEGER :: undone_count
+
+        undone_count = 0
+        IF (self_play_mode) THEN
+            takeback_count = MIN(1, num_half_moves)
+        ELSE
+            takeback_count = MIN(2, num_half_moves)
+        END IF
+
+        IF (takeback_count <= 0) THEN
+            PRINT *, "No moves available to take back."
+            RETURN
+        END IF
+
+        DO WHILE (takeback_count > 0)
+            CALL unmake_move(game_board, played_move_history(num_half_moves), unmake_history(num_half_moves))
+            white_time_ms = white_time_before_move(num_half_moves)
+            black_time_ms = black_time_before_move(num_half_moves)
+            move_history(num_half_moves) = ''
+            move_elapsed_ms_history(num_half_moves) = -1_8
+            num_half_moves = num_half_moves - 1
+            takeback_count = takeback_count - 1
+            undone_count = undone_count + 1
+        END DO
+
+        game_over = .FALSE.
+        game_lost_on_time = .FALSE.
+        game_resigned = .FALSE.
+        current_game_status = GAME_ONGOING
+        game_winner_color = NO_COLOR
+        resignation_winner_color = NO_COLOR
+        time_forfeit_winner_color = NO_COLOR
+        PRINT *, "Took back ", undone_count, " move(s)."
+        CALL print_board(game_board)
+    END SUBROUTINE apply_console_takeback
+
+    FUNCTION format_pgn_time_control_tag(initial_ms, increment_ms_value) RESULT(tag)
+        INTEGER(KIND=8), INTENT(IN) :: initial_ms, increment_ms_value
+        CHARACTER(LEN=32) :: tag
+        INTEGER(KIND=8) :: initial_seconds, increment_seconds
+
+        initial_seconds = MAX(0_8, initial_ms / 1000_8)
+        increment_seconds = MAX(0_8, increment_ms_value / 1000_8)
+        WRITE(tag, '(I0,A,I0)') initial_seconds, '+', increment_seconds
+    END FUNCTION format_pgn_time_control_tag
 
     SUBROUTINE report_book_status(book, side_name)
         TYPE(Opening_Book_Type), INTENT(IN) :: book

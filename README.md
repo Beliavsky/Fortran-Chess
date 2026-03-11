@@ -27,8 +27,10 @@ On Windows with `gfortran` and `make` in `PATH`:
 make
 ```
 
-This produces `chess.exe` on Windows and `chess` on systems that do not append
-`.exe`.
+This produces:
+
+- `chess.exe` for the console program
+- `chessgui.exe` for the native Windows GUI window
 
 To clean build products:
 
@@ -42,6 +44,12 @@ Start the console program:
 
 ```powershell
 .\chess.exe
+```
+
+Start the GUI window:
+
+```powershell
+.\chessgui.exe
 ```
 
 Show help:
@@ -76,6 +84,37 @@ At startup the program asks for:
 
 If you leave the time-control prompt blank, no shared clock is used. In that
 case the computer uses a default time limit of 60 seconds per move.
+
+During console or GUI play, the engine also appends a behind-the-scenes
+`search_debug.log` file in the project directory. It records each AI turn's move
+history, opening-book decision, root candidate scores by depth, and final move
+choice so suspicious moves can be diagnosed after the game.
+
+Saved games in `games.pgn` include per-move elapsed-time annotations as concise
+comments such as `{4s}`.
+
+## Windows GUI
+
+The repository also builds `chessgui.exe`, a native Win32 GUI executable.
+
+Current scope:
+
+- opens a graphical window on Windows
+- draws Staunton-style piece images on the board
+- lets you choose color, time control, search depth, and an optional opening-book move cap before starting a game
+- accepts move entry in SAN or coordinate form through a text box
+- lets you press Enter in the move box to play a move
+- includes `Suggest Move`, `Autoplay`, and `Takeback` buttons
+- displays White and Black clock times
+- shows the current evaluation from White's perspective
+- includes `Offer Draw` and `Resign` buttons
+- uses the opening books during GUI play and aborts start if a book file is invalid
+- keeps the console program and UCI mode unchanged
+
+When `chessgui.exe` runs, it also appends `gui_debug.log` in the project
+directory. That file records GUI startup checkpoints, key Win32 messages, button
+actions, move-entry attempts, and other high-risk GUI paths so a crash usually
+leaves a readable trail up to the last completed step.
 
 ## Command-Line Options
 
@@ -130,6 +169,12 @@ During a console game you can type:
 
 - `?`
   ask the engine for a suggested move
+- `suggest`
+  ask the engine for a suggested move
+- `autoplay`
+  let the engine play both sides from the current position
+- `takeback`
+  take back the last move in self-play, or the last move pair against the engine
 - `score`
   print the current evaluation from White's perspective
 - `eval on`
@@ -221,7 +266,7 @@ message that includes the offending token and line number.
 
 ## Opening Books
 
-At the beginning of a console game, the program looks for:
+At console startup, before other game setup, the program looks for:
 
 - `book_white.txt`
 - `book_black.txt`
@@ -229,7 +274,9 @@ At the beginning of a console game, the program looks for:
 If a file is absent, no opening book is used for that side.
 
 If a book file exists but has invalid syntax, the program reports the error at
-startup and, where possible, suggests a correction.
+startup, prints the offending line, and, where possible, suggests a correction
+or replacement line. When an automatic fix is available, it offers to overwrite
+the file and recheck it before continuing. If you decline, startup exits.
 
 ### Book Format
 
@@ -295,10 +342,11 @@ games.pgn
 
 Notes:
 
+- elapsed move times are written as comments like `{4s}`
 - games are appended, not overwritten
 - each game is separated by blank lines
 - movetext is wrapped at 100 columns
-- the result is written for normal endings, resignation, and time forfeit
+- the result is written for normal endings, including threefold-repetition draws, resignation, and time forfeit
 
 If you want to start fresh, simply delete `games.pgn`.
 

@@ -1,8 +1,9 @@
 MODULE User_Input_Processor
     USE Chess_Types
     USE Evaluation, ONLY: evaluate_board
-    USE Search, ONLY: find_best_move
-    USE Notation_Utils, ONLY: move_matches_input, to_lower_string, move_to_san
+    USE Notation_Utils, ONLY: move_matches_input, to_lower_string
+    USE Opening_Book, ONLY: Opening_Book_Type
+    USE Move_Suggestion, ONLY: suggest_move_for_position
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: get_human_move, print_in_game_help
@@ -22,17 +23,22 @@ CONTAINS
     !
     ! Returns:
     !   LOGICAL: .TRUE. if a valid move was found, .FALSE. otherwise (e.g., quit, invalid input)
-    LOGICAL FUNCTION get_human_move(board, legal_moves, num_legal_moves, search_depth, show_eval_after_ai, &
-                                    resign_enabled, resign_threshold_cp, chosen_move, game_over_flag)
+    LOGICAL FUNCTION get_human_move(board, legal_moves, num_legal_moves, search_depth, move_history, num_half_moves, &
+                                    white_book, black_book, show_eval_after_ai, resign_enabled, resign_threshold_cp, &
+                                    chosen_move, game_over_flag, autoplay_requested, takeback_requested)
         TYPE(Board_Type), INTENT(IN) :: board
         TYPE(Move_Type), DIMENSION(MAX_MOVES), INTENT(IN) :: legal_moves
         INTEGER, INTENT(IN) :: num_legal_moves
         INTEGER, INTENT(IN) :: search_depth
+        CHARACTER(LEN=*), DIMENSION(:), INTENT(IN) :: move_history
+        INTEGER, INTENT(IN) :: num_half_moves
+        TYPE(Opening_Book_Type), INTENT(IN) :: white_book, black_book
         LOGICAL, INTENT(INOUT) :: show_eval_after_ai
         LOGICAL, INTENT(INOUT) :: resign_enabled
         INTEGER, INTENT(INOUT) :: resign_threshold_cp
         TYPE(Move_Type), INTENT(OUT) :: chosen_move
         LOGICAL, INTENT(INOUT) :: game_over_flag
+        LOGICAL, INTENT(OUT) :: autoplay_requested, takeback_requested
 
         CHARACTER(LEN=64) :: user_input
         CHARACTER(LEN=64) :: lower_input
@@ -43,16 +49,18 @@ CONTAINS
         INTEGER :: score_cp, white_score_cp
         INTEGER :: ios
         REAL :: threshold_pawns
-        TYPE(Board_Type) :: board_copy
         TYPE(Move_Type) :: hint_move
         LOGICAL :: hint_found
+        CHARACTER(LEN=32) :: suggestion_source
 
         get_human_move = .FALSE. ! Default to no valid move found
         move_found_internal = .FALSE.
         game_over_flag = .FALSE. ! Default to not game over
+        autoplay_requested = .FALSE.
+        takeback_requested = .FALSE.
 
         PRINT *, "" ! Newline
-        PRINT *, "Your turn. Enter move (e.g., d4, Nf6, cxd5, O-O, e2e4, or score): "
+        PRINT *, "Your turn. Enter move (e.g., d4, Nf6, cxd5, O-O, e2e4, score, suggest, autoplay, or takeback): "
 
         DO WHILE (.NOT. move_found_internal .AND. .NOT. game_over_flag)
             READ(*, '(A)') user_input
@@ -61,6 +69,16 @@ CONTAINS
             IF (lower_input == 'quit' .OR. lower_input == 'exit') THEN
                 PRINT *, "Exiting game."
                 game_over_flag = .TRUE.
+                RETURN
+            END IF
+
+            IF (lower_input == 'autoplay') THEN
+                autoplay_requested = .TRUE.
+                RETURN
+            END IF
+
+            IF (lower_input == 'takeback' .OR. lower_input == 'undo') THEN
+                takeback_requested = .TRUE.
                 RETURN
             END IF
 
@@ -75,12 +93,11 @@ CONTAINS
                 CYCLE
             END IF
 
-            IF (lower_input == '?' ) THEN
-                board_copy = board
-                CALL find_best_move(board_copy, search_depth, hint_found, hint_move)
+            IF (lower_input == '?' .OR. lower_input == 'suggest') THEN
+                CALL suggest_move_for_position(board, legal_moves, num_legal_moves, move_history, num_half_moves, &
+                    white_book, black_book, search_depth, hint_found, hint_move, hint_text, suggestion_source)
                 IF (hint_found) THEN
-                    hint_text = move_to_san(board, hint_move, legal_moves, num_legal_moves)
-                    PRINT *, "Suggested move: ", TRIM(hint_text)
+                    PRINT *, "Suggested move: ", TRIM(hint_text), " (", TRIM(suggestion_source), ")"
                 ELSE
                     PRINT *, "No suggestion available."
                 END IF
@@ -177,7 +194,10 @@ CONTAINS
         PRINT *, "Commands:"
         PRINT *, "  move        Play a move in SAN or coordinate form, e.g. d4, Nf6, cxd5, e2e4"
         PRINT *, "  ?           Suggest a move"
+        PRINT *, "  suggest     Suggest a move"
+        PRINT *, "  autoplay    Let the computer play both sides from here"
         PRINT *, "  score       Show the current evaluation from White's perspective"
+        PRINT *, "  takeback    Take back the last move (or move pair against the engine)"
         PRINT *, "  eval on/off Turn evaluation display after computer moves on or off"
         PRINT *, "  resign X    Set resignation threshold to X pawns"
         PRINT *, "  resign off  Disable resignation"

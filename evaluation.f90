@@ -472,15 +472,21 @@ CONTAINS
             file1 = king_sq%file + df
             IF (.NOT. sq_is_valid(MAX(1, MIN(BOARD_SIZE, rank1)), file1)) CYCLE
 
-            IF (sq_is_valid(rank1, file1) .AND. board%squares_piece(rank1, file1) == PAWN .AND. &
-                board%squares_color(rank1, file1) == color) THEN
-                score = score + KING_SHIELD_PAWN_MG
-            ELSE IF (sq_is_valid(rank2, file1) .AND. board%squares_piece(rank2, file1) == PAWN .AND. &
-                     board%squares_color(rank2, file1) == color) THEN
-                score = score + KING_SHIELD_PAWN_MG / 2
-            ELSE
-                score = score - KING_SHIELD_PAWN_MG / 2
+            IF (sq_is_valid(rank1, file1)) THEN
+                IF (board%squares_piece(rank1, file1) == PAWN .AND. board%squares_color(rank1, file1) == color) THEN
+                    score = score + KING_SHIELD_PAWN_MG
+                    CYCLE
+                END IF
             END IF
+
+            IF (sq_is_valid(rank2, file1)) THEN
+                IF (board%squares_piece(rank2, file1) == PAWN .AND. board%squares_color(rank2, file1) == color) THEN
+                    score = score + KING_SHIELD_PAWN_MG / 2
+                    CYCLE
+                END IF
+            END IF
+
+            score = score - KING_SHIELD_PAWN_MG / 2
         END DO
     END FUNCTION pawn_shield_score
 
@@ -610,7 +616,8 @@ CONTAINS
             DO i = 1, 8
                 nr = sq%rank + KNIGHT_DELTAS(i, 1)
                 nf = sq%file + KNIGHT_DELTAS(i, 2)
-                IF (sq_is_valid(nr, nf) .AND. board%squares_color(nr, nf) /= color) mobility = mobility + 1
+                IF (.NOT. sq_is_valid(nr, nf)) CYCLE
+                IF (board%squares_color(nr, nf) /= color) mobility = mobility + 1
             END DO
         CASE(BISHOP)
             mobility = count_sliding_mobility(board, sq, color, BISHOP_DIRS, 4)
