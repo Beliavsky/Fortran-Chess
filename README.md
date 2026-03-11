@@ -13,7 +13,7 @@ Fortran. It supports:
 - a basic UCI mode
 
 This project started from code by Dean Menezes in
-`https://github.com/menezesd/FortranChess`.
+[FortranChess](https://github.com/menezesd/FortranChess).
 
 This README describes how to build it and how to use the current program.
 
