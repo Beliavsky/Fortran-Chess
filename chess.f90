@@ -11,9 +11,13 @@ PROGRAM Fortran_Chess
     USE Transposition_Table, ONLY: init_zobrist_keys
     USE User_Input_Processor, ONLY: get_human_move, print_in_game_help
     USE Game_State_Checker
-    USE Notation_Utils, ONLY: move_to_san, write_pgn_file, to_lower_string
-    USE Opening_Book, ONLY: Opening_Book_Type, load_opening_book, choose_book_move
+    USE Game_Time_Utils, ONLY: parse_time_control, elapsed_milliseconds, &
+        apply_clock_after_move, get_ai_time_budget_seconds, format_clock
+    USE Notation_Utils, ONLY: move_to_san, move_to_coordinate, write_pgn_file, to_lower_string
+    USE Opening_Book, ONLY: Opening_Book_Type, load_opening_book, choose_book_move, apply_opening_book_fix
     USE Opening_Sequence, ONLY: load_opening_sequence
+    USE Search_Debug_Log, ONLY: start_ai_turn_debug_log, log_opening_book_hit, log_opening_book_miss, &
+        finish_ai_turn_debug_log
     USE UCI_Driver, ONLY: run_uci_mode
     IMPLICIT NONE
 
@@ -31,6 +35,7 @@ PROGRAM Fortran_Chess
     CHARACTER(LEN=260) :: arg_value
     LOGICAL :: uci_mode
     CHARACTER(LEN=32), DIMENSION(512) :: move_history
+    INTEGER(KIND=8), DIMENSION(512) :: move_elapsed_ms_history
     INTEGER :: num_half_moves
     CHARACTER(LEN=32) :: move_text
     CHARACTER(LEN=7) :: pgn_result
@@ -50,13 +55,14 @@ PROGRAM Fortran_Chess
     LOGICAL :: open_requested, opening_loaded
     CHARACTER(LEN=260) :: opening_filename
     CHARACTER(LEN=256) :: opening_error
-    REAL, PARAMETER :: DEFAULT_COMPUTER_TIME_LIMIT_SECONDS = 60.0
     LOGICAL :: time_control_enabled, game_lost_on_time
     INTEGER(KIND=8) :: white_time_ms, black_time_ms, increment_ms
     INTEGER(KIND=8) :: turn_start_count, turn_end_count, count_rate, elapsed_ms
+    INTEGER(KIND=8) :: move_elapsed_ms
     INTEGER :: time_forfeit_winner_color
     INTEGER :: resignation_attempts
     INTEGER, PARAMETER :: MAX_RESIGNATION_ATTEMPTS = 3
+    REAL :: ai_time_budget_seconds
 
     uci_mode = .FALSE.
     self_play_mode = .FALSE.
@@ -65,6 +71,7 @@ PROGRAM Fortran_Chess
     resign_threshold_cp = 500
     game_resigned = .FALSE.
     num_half_moves = 0
+    move_elapsed_ms_history = -1_8
     pgn_result = '*'
     current_game_status = GAME_ONGOING
     game_winner_color = NO_COLOR
@@ -111,6 +118,10 @@ PROGRAM Fortran_Chess
         CALL run_uci_mode()
         STOP
     END IF
+
+    ! Verify any opening books before other console-mode startup work.
+    IF (.NOT. verify_opening_book('White', 'book_white.txt', white_book)) STOP
+    IF (.NOT. verify_opening_book('Black', 'book_black.txt', black_book)) STOP
 
     ! --- Initialize Zobrist Keys and Board ---
     CALL init_zobrist_keys()
@@ -217,10 +228,6 @@ PROGRAM Fortran_Chess
         END IF
     END DO
 
-    CALL load_opening_book('book_white.txt', white_book)
-    CALL load_opening_book('book_black.txt', black_book)
-    CALL report_book_status(white_book, 'White')
-    CALL report_book_status(black_book, 'Black')
     CALL print_board(game_board)
 
     ! --- Game Loop ---
@@ -260,13 +267,13 @@ PROGRAM Fortran_Chess
                 CYCLE
             END IF
 
-            IF (time_control_enabled) CALL SYSTEM_CLOCK(turn_start_count)
-            move_found = get_human_move(game_board, legal_moves, num_legal_moves, search_depth, &
-                show_eval_after_ai, resign_enabled, resign_threshold_cp, chosen_move, game_over)
-            IF (time_control_enabled) THEN
-                CALL SYSTEM_CLOCK(turn_end_count)
-                elapsed_ms = elapsed_milliseconds(turn_start_count, turn_end_count, count_rate)
-            END IF
+            CALL SYSTEM_CLOCK(turn_start_count)
+            move_found = get_human_move(game_board, legal_moves, num_legal_moves, search_depth, move_history, &
+                num_half_moves, white_book, black_book, show_eval_after_ai, resign_enabled, resign_threshold_cp, &
+                chosen_move, game_over)
+            CALL SYSTEM_CLOCK(turn_end_count)
+            move_elapsed_ms = elapsed_milliseconds(turn_start_count, turn_end_count, count_rate)
+            IF (time_control_enabled) elapsed_ms = move_elapsed_ms
 
             IF (game_over) EXIT ! Exit game loop if user quit
 
@@ -283,6 +290,7 @@ PROGRAM Fortran_Chess
                  IF (num_half_moves < SIZE(move_history)) THEN
                      num_half_moves = num_half_moves + 1
                      move_history(num_half_moves) = TRIM(move_text)
+                     move_elapsed_ms_history(num_half_moves) = move_elapsed_ms
                  END IF
                  PRINT *, "You played ", TRIM(move_text)
                  CALL make_move(game_board, chosen_move, move_info)
@@ -319,35 +327,45 @@ PROGRAM Fortran_Chess
                 END IF
             END IF
 
+            CALL SYSTEM_CLOCK(turn_start_count)
             IF (active_book%valid) THEN
                 book_move_found = choose_book_move(active_book, move_history, num_half_moves, game_board, &
                     legal_moves, num_legal_moves, chosen_move, book_move_text)
             END IF
 
+            ai_time_budget_seconds = get_ai_time_budget_seconds(game_board%current_player, white_time_ms, black_time_ms, &
+                increment_ms, num_half_moves, time_control_enabled)
+            CALL start_ai_turn_debug_log('console', game_board%current_player, move_history, num_half_moves, &
+                search_depth, ai_time_budget_seconds)
+
             IF (book_move_found) THEN
                 move_found = .TRUE.
                 PRINT *, "Computer found a book move."
+                CALL log_opening_book_hit(active_book%filename, book_move_text, &
+                    move_to_san(game_board, chosen_move, legal_moves, num_legal_moves), move_to_coordinate(chosen_move))
             ELSE
-                IF (time_control_enabled) CALL SYSTEM_CLOCK(turn_start_count)
+                IF (active_book%valid) CALL log_opening_book_miss(active_book%filename)
                 CALL find_best_move(game_board, search_depth, move_found, chosen_move, &
-                    time_limit_seconds=get_ai_time_budget_seconds(game_board%current_player, white_time_ms, black_time_ms, increment_ms, num_half_moves), &
+                    time_limit_seconds=ai_time_budget_seconds, &
                     show_countdown=.TRUE.)
-                IF (time_control_enabled) THEN
-                    CALL SYSTEM_CLOCK(turn_end_count)
-                    elapsed_ms = elapsed_milliseconds(turn_start_count, turn_end_count, count_rate)
-                ELSE
-                    elapsed_ms = 0
-                END IF
                 CALL generate_moves(game_board, legal_moves, num_legal_moves)
+            END IF
+            CALL SYSTEM_CLOCK(turn_end_count)
+            move_elapsed_ms = elapsed_milliseconds(turn_start_count, turn_end_count, count_rate)
+            IF (time_control_enabled) THEN
+                elapsed_ms = move_elapsed_ms
+            ELSE
+                elapsed_ms = 0_8
             END IF
             IF (move_found) THEN
                 IF (time_control_enabled) THEN
                     IF (book_move_found) THEN
-                        elapsed_ms = 0
+                        elapsed_ms = 0_8
                     END IF
                     IF (.NOT. apply_clock_after_move(game_board%current_player, elapsed_ms, white_time_ms, black_time_ms, increment_ms)) THEN
                         game_lost_on_time = .TRUE.
                         time_forfeit_winner_color = get_opponent_color(game_board%current_player)
+                        CALL finish_ai_turn_debug_log('Computer lost on time before completing the move.')
                         game_over = .TRUE.
                         EXIT
                     END IF
@@ -356,15 +374,22 @@ PROGRAM Fortran_Chess
                 IF (num_half_moves < SIZE(move_history)) THEN
                     num_half_moves = num_half_moves + 1
                     move_history(num_half_moves) = TRIM(move_text)
+                    move_elapsed_ms_history(num_half_moves) = move_elapsed_ms
                 END IF
                 PRINT *, "Computer played ", TRIM(move_text)
                 CALL make_move(game_board, chosen_move, move_info)
+                IF (book_move_found) THEN
+                    CALL finish_ai_turn_debug_log('Opening-book move played.')
+                ELSE
+                    CALL finish_ai_turn_debug_log('Search move played.')
+                END IF
                 IF (show_eval_after_ai) THEN
                     CALL print_position_evaluation(game_board)
                 END IF
             ELSE
                 ! Should be caught by game over check, but safety print
                 PRINT *, "Error: AI found no move but game not over?"
+                CALL finish_ai_turn_debug_log('No move found.')
                 game_over = .TRUE.
             END IF
         END IF
@@ -407,7 +432,7 @@ PROGRAM Fortran_Chess
         END SELECT
     END IF
 
-    CALL write_pgn_file('games.pgn', move_history, num_half_moves, pgn_result)
+    CALL write_pgn_file('games.pgn', move_history, num_half_moves, pgn_result, move_elapsed_ms_history)
     PRINT *, "Saved game to games.pgn"
     PRINT *, "Game finished."
 
@@ -424,10 +449,62 @@ CONTAINS
         ELSE
             PRINT *, "Opening book syntax error in " // TRIM(book%filename)
             IF (book%error_line > 0) PRINT *, "Line ", book%error_line
+            IF (LEN_TRIM(book%error_text) > 0) PRINT *, "Bad line: " // TRIM(book%error_text)
             IF (LEN_TRIM(book%error_message) > 0) PRINT *, TRIM(book%error_message)
             IF (LEN_TRIM(book%suggestion) > 0) PRINT *, "Suggestion: " // TRIM(book%suggestion)
+            IF (LEN_TRIM(book%replacement_line) > 0) PRINT *, "Possible replacement: " // TRIM(book%replacement_line)
         END IF
     END SUBROUTINE report_book_status
+
+    LOGICAL FUNCTION verify_opening_book(side_name, filename, book) RESULT(ok)
+        CHARACTER(LEN=*), INTENT(IN) :: side_name, filename
+        TYPE(Opening_Book_Type), INTENT(OUT) :: book
+
+        CHARACTER(LEN=32) :: response
+        CHARACTER(LEN=256) :: fix_error
+        LOGICAL :: fix_applied
+
+        ok = .FALSE.
+        DO
+            CALL load_opening_book(filename, book)
+            IF (.NOT. book%found) THEN
+                ok = .TRUE.
+                RETURN
+            END IF
+            IF (book%valid) THEN
+                CALL report_book_status(book, side_name)
+                ok = .TRUE.
+                RETURN
+            END IF
+
+            CALL report_book_status(book, side_name)
+            IF (LEN_TRIM(book%replacement_line) == 0) THEN
+                PRINT *, "No automatic fix is available. Exiting."
+                RETURN
+            END IF
+
+            DO
+                PRINT *, "Apply this fix and overwrite " // TRIM(book%filename) // "? (Y/n): "
+                READ(*, '(A)') response
+                response = TRIM(ADJUSTL(to_lower_string(response)))
+                IF (LEN_TRIM(response) == 0 .OR. response == 'y' .OR. response == 'yes') THEN
+                    CALL apply_opening_book_fix(book, fix_applied, fix_error)
+                    IF (.NOT. fix_applied) THEN
+                        PRINT *, "Failed to update " // TRIM(book%filename)
+                        IF (LEN_TRIM(fix_error) > 0) PRINT *, TRIM(fix_error)
+                        RETURN
+                    END IF
+                    PRINT *, "Updated " // TRIM(book%filename) // ". Rechecking."
+                    EXIT
+                ELSE IF (response == 'n' .OR. response == 'no') THEN
+                    PRINT *, "Opening book fix declined. Exiting."
+                    RETURN
+                ELSE
+                    PRINT *, "Please answer Y or N."
+                END IF
+            END DO
+        END DO
+    END FUNCTION verify_opening_book
 
     SUBROUTINE print_help()
         PRINT *, "FortranChess"
@@ -454,109 +531,6 @@ CONTAINS
 
         PRINT *, "Clocks: White ", TRIM(format_clock(white_ms)), "   Black ", TRIM(format_clock(black_ms))
     END SUBROUTINE print_clock_status
-
-    LOGICAL FUNCTION parse_time_control(text, initial_ms, increment_out_ms)
-        CHARACTER(LEN=*), INTENT(IN) :: text
-        INTEGER(KIND=8), INTENT(OUT) :: initial_ms, increment_out_ms
-
-        INTEGER :: plus_pos, ios
-        REAL :: minutes_value, increment_value
-
-        parse_time_control = .FALSE.
-        initial_ms = 0
-        increment_out_ms = 0
-        plus_pos = INDEX(text, '+')
-        IF (plus_pos <= 1 .OR. plus_pos >= LEN_TRIM(text)) RETURN
-
-        READ(text(1:plus_pos - 1), *, IOSTAT=ios) minutes_value
-        IF (ios /= 0 .OR. minutes_value <= 0.0) RETURN
-        READ(text(plus_pos + 1:LEN_TRIM(text)), *, IOSTAT=ios) increment_value
-        IF (ios /= 0 .OR. increment_value < 0.0) RETURN
-
-        initial_ms = NINT(minutes_value * 60000.0)
-        increment_out_ms = NINT(increment_value * 1000.0)
-        parse_time_control = (initial_ms > 0)
-    END FUNCTION parse_time_control
-
-    INTEGER(KIND=8) FUNCTION elapsed_milliseconds(start_count, end_count, local_count_rate)
-        INTEGER(KIND=8), INTENT(IN) :: start_count, end_count
-        INTEGER(KIND=8), INTENT(IN) :: local_count_rate
-
-        elapsed_milliseconds = 0
-        IF (local_count_rate <= 0) RETURN
-        elapsed_milliseconds = MAX(0_8, NINT(1000.0 * REAL(end_count - start_count) / REAL(local_count_rate)))
-    END FUNCTION elapsed_milliseconds
-
-    LOGICAL FUNCTION apply_clock_after_move(player_color, spent_ms, white_ms, black_ms, inc_ms)
-        INTEGER, INTENT(IN) :: player_color
-        INTEGER(KIND=8), INTENT(IN) :: spent_ms, inc_ms
-        INTEGER(KIND=8), INTENT(INOUT) :: white_ms, black_ms
-
-        apply_clock_after_move = .TRUE.
-        IF (player_color == WHITE) THEN
-            IF (spent_ms >= white_ms) THEN
-                white_ms = 0
-                apply_clock_after_move = .FALSE.
-            ELSE
-                white_ms = white_ms - spent_ms + inc_ms
-            END IF
-        ELSE
-            IF (spent_ms >= black_ms) THEN
-                black_ms = 0
-                apply_clock_after_move = .FALSE.
-            ELSE
-                black_ms = black_ms - spent_ms + inc_ms
-            END IF
-        END IF
-    END FUNCTION apply_clock_after_move
-
-    REAL FUNCTION get_ai_time_budget_seconds(player_color, white_ms, black_ms, inc_ms, half_moves_played)
-        INTEGER, INTENT(IN) :: player_color, half_moves_played
-        INTEGER(KIND=8), INTENT(IN) :: white_ms, black_ms, inc_ms
-
-        INTEGER(KIND=8) :: remaining_ms, reserve_ms, share_ms, budget_ms
-        INTEGER :: estimated_moves_remaining
-
-        IF (player_color == WHITE) THEN
-            remaining_ms = white_ms
-        ELSE
-            remaining_ms = black_ms
-        END IF
-
-        IF (remaining_ms <= 0) THEN
-            get_ai_time_budget_seconds = 1.0
-            RETURN
-        END IF
-
-        estimated_moves_remaining = MAX(8, 40 - half_moves_played / 2)
-        share_ms = remaining_ms / estimated_moves_remaining
-        reserve_ms = MIN(MAX(inc_ms * 3, 5000_8), remaining_ms / 2)
-        budget_ms = share_ms + inc_ms / 2
-        budget_ms = MAX(1000_8, budget_ms)
-        budget_ms = MIN(budget_ms, MAX(1000_8, remaining_ms - reserve_ms))
-
-        get_ai_time_budget_seconds = REAL(MAX(1_8, budget_ms)) / 1000.0
-        IF (.NOT. time_control_enabled) THEN
-            get_ai_time_budget_seconds = DEFAULT_COMPUTER_TIME_LIMIT_SECONDS
-        END IF
-    END FUNCTION get_ai_time_budget_seconds
-
-    FUNCTION format_clock(clock_ms) RESULT(clock_text)
-        INTEGER(KIND=8), INTENT(IN) :: clock_ms
-        CHARACTER(LEN=16) :: clock_text
-        INTEGER(KIND=8) :: total_seconds, hours, minutes, seconds
-
-        total_seconds = MAX(0_8, (clock_ms + 500_8) / 1000_8)
-        hours = total_seconds / 3600_8
-        minutes = MOD(total_seconds, 3600_8) / 60_8
-        seconds = MOD(total_seconds, 60_8)
-
-        IF (hours > 0) THEN
-            WRITE(clock_text, '(I0,A,I2.2,A,I2.2)') hours, ':', minutes, ':', seconds
-        ELSE
-            WRITE(clock_text, '(I0,A,I2.2)') minutes, ':', seconds
-        END IF
-    END FUNCTION format_clock
 
     SUBROUTINE print_position_evaluation(board)
         TYPE(Board_Type), INTENT(IN) :: board
