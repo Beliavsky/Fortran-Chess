@@ -335,28 +335,6 @@ frontend with every option exposed.
 - `games.pgn`
   accumulated saved games
 
-## Windows Helper Script
-
-The repository also contains:
-
-```text
-push_to_beliavsky_github.bat
-```
-
-This helper script can:
-
-- show the current git status
-- optionally commit the working tree
-- add or update a remote named `github-beliavsky`
-- push the current local branch to `main` on
-  `https://github.com/Beliavsky/Fortran-Chess`
-
-Run it from the repository directory:
-
-```bat
-push_to_beliavsky_github.bat
-```
-
 ## Typical Console Session
 
 ```text
