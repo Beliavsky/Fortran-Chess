@@ -20,7 +20,7 @@ MODULE Search
         store_killer, update_history_score, clear_history, moves_equal, order_moves_with_killers
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: find_best_move
+    PUBLIC :: find_best_move, display_eval_white_cp
 
     ! Constants for search algorithm
     INTEGER, PARAMETER :: MATE_SCORE = 100000 ! Score indicating checkmate
@@ -39,6 +39,12 @@ MODULE Search
     INTEGER, SAVE :: countdown_column = 0
 
 CONTAINS
+
+    PURE LOGICAL FUNCTION is_winning_mate_score(score) RESULT(is_mate)
+        INTEGER, INTENT(IN) :: score
+
+        is_mate = (score >= MATE_SCORE - MAX_DEPTH)
+    END FUNCTION is_winning_mate_score
 
     SUBROUTINE start_search_timer(time_limit_seconds, show_countdown)
         REAL, INTENT(IN), OPTIONAL :: time_limit_seconds
@@ -71,6 +77,27 @@ CONTAINS
         timer_enabled = .FALSE.
         countdown_enabled = .FALSE.
     END SUBROUTINE finish_search_timer
+
+    INTEGER FUNCTION display_eval_white_cp(board) RESULT(white_eval_cp)
+        TYPE(Board_Type), INTENT(IN) :: board
+        TYPE(Board_Type) :: board_copy
+        INTEGER :: eval_cp
+
+        timer_enabled = .FALSE.
+        countdown_enabled = .FALSE.
+        search_timed_out = .FALSE.
+        nodes_since_time_check = 0
+        last_countdown_second = -1
+        countdown_column = 0
+
+        board_copy = board
+        eval_cp = quiescence(board_copy, -INF, INF)
+        IF (board%current_player == BLACK) THEN
+            white_eval_cp = -eval_cp
+        ELSE
+            white_eval_cp = eval_cp
+        END IF
+    END FUNCTION display_eval_white_cp
 
     REAL FUNCTION elapsed_search_seconds() RESULT(elapsed_seconds)
         INTEGER(KIND=8) :: current_count
@@ -219,7 +246,7 @@ CONTAINS
         INTEGER :: num_moves, i
         TYPE(Move_Type) :: current_move, best_move_here
         TYPE(UnmakeInfo_Type) :: unmake_info
-        LOGICAL :: in_check
+        LOGICAL :: in_check, beta_cutoff
         TYPE(TT_Entry_Type) :: tt_entry
         LOGICAL :: tt_hit
         ! NMP constants and state
@@ -230,6 +257,7 @@ CONTAINS
         INTEGER :: current_depth ! Local variable for depth, can be modified
 
         current_depth = depth_param
+        beta_cutoff = .FALSE.
 
         IF (check_search_time()) THEN
             best_score = evaluate_board(board)
@@ -367,6 +395,7 @@ CONTAINS
             ! what opponent can force, stop searching this branch
             IF (current_alpha >= beta) THEN
                  CALL store_tt_entry(board%zobrist_key, depth_param, beta, HASH_FLAG_BETA, moves(i))
+                 beta_cutoff = .TRUE.
                  ! Store killer move if it's a quiet move (now using external module)
                  CALL store_killer(current_move, ply)
                  IF (current_move%captured_piece == NO_PIECE .AND. &
@@ -381,7 +410,9 @@ CONTAINS
 
         ! --- Store result in Transposition Table ---
         IF (best_move_here%from_sq%rank /= 0) THEN
-            IF (best_score <= alpha_orig) THEN ! Upper bound
+            IF (beta_cutoff) THEN
+                ! The cutoff bound was already stored above.
+            ELSE IF (best_score <= alpha_orig) THEN ! Upper bound
                 CALL store_tt_entry(board%zobrist_key, depth_param, best_score, HASH_FLAG_ALPHA, best_move_here)
             ELSE ! Exact score
                 CALL store_tt_entry(board%zobrist_key, depth_param, best_score, HASH_FLAG_EXACT, best_move_here)
@@ -422,7 +453,7 @@ CONTAINS
         TYPE(Move_Type) :: current_move
         TYPE(UnmakeInfo_Type) :: unmake_info
         INTEGER :: aspiration_delta
-        LOGICAL :: research_needed, iteration_completed, completed_move_found
+        LOGICAL :: research_needed, iteration_completed, completed_move_found, mate_found
         INTEGER :: last_iteration_score, completed_best_score
         TYPE(Move_Type) :: completed_best_move
         CHARACTER(LEN=32) :: move_text
@@ -433,6 +464,7 @@ CONTAINS
         completed_best_score = -INF
         last_iteration_score = 0 ! Initialize
         completed_move_found = .FALSE.
+        mate_found = .FALSE.
         CALL start_search_timer(time_limit_seconds, show_countdown)
 
         ! Aspiration window delta
@@ -512,6 +544,18 @@ CONTAINS
                          best_move_found = .TRUE.
                     END IF
 
+                    IF (is_winning_mate_score(score)) THEN
+                         best_score_so_far = score
+                         best_move = current_move
+                         best_move_found = .TRUE.
+                         completed_best_score = score
+                         completed_best_move = current_move
+                         completed_move_found = .TRUE.
+                         mate_found = .TRUE.
+                         iteration_completed = .TRUE.
+                         EXIT
+                    END IF
+
                     ! Update alpha for root node
                     IF (best_score_so_far > alpha) THEN
                          alpha = best_score_so_far
@@ -519,6 +563,7 @@ CONTAINS
                 END DO
 
                 IF (.NOT. iteration_completed) EXIT
+                IF (mate_found) EXIT
 
                 ! --- Check Aspiration Window Failure ---
                 IF (d /= 1) THEN ! Only check for aspiration failures after first iteration
@@ -540,6 +585,7 @@ CONTAINS
             END DO ! End DO WHILE (research_needed)
             IF (search_timed_out) EXIT
             IF (.NOT. iteration_completed) EXIT
+            IF (mate_found) EXIT
 
             ! Store score for next iteration's aspiration window
             last_iteration_score = best_score_so_far

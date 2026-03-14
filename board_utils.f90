@@ -12,7 +12,8 @@ MODULE Board_Utils
               file_rank_to_sq, is_square_attacked, &
               find_king, is_in_check, update_piece_lists, &
               update_piece_lists_unmake, remove_from_piece_list, &
-              update_piece_position, add_to_piece_list
+              update_piece_position, add_to_piece_list, &
+              set_board_from_fen, board_to_fen
 
 CONTAINS
 
@@ -176,6 +177,165 @@ CONTAINS
 
     END SUBROUTINE init_board
 
+    LOGICAL FUNCTION set_board_from_fen(board, fen) RESULT(ok)
+        TYPE(Board_Type), INTENT(INOUT) :: board
+        CHARACTER(LEN=*), INTENT(IN) :: fen
+        CHARACTER(LEN=16) :: side_str, castle_str, ep_str
+        INTEGER :: rank, file, idx, lenfen, part
+        CHARACTER(LEN=1) :: c
+        INTEGER :: piece, color
+
+        ok = .FALSE.
+        board%squares_piece = NO_PIECE
+        board%squares_color = NO_COLOR
+        board%num_white_pieces = 0
+        board%num_black_pieces = 0
+        board%wc_k = .FALSE.
+        board%wc_q = .FALSE.
+        board%bc_k = .FALSE.
+        board%bc_q = .FALSE.
+        board%ep_target_present = .FALSE.
+        board%ep_target_sq%file = 0
+        board%ep_target_sq%rank = 0
+
+        lenfen = LEN_TRIM(fen)
+        IF (lenfen == 0) RETURN
+
+        rank = 8
+        file = 1
+        idx = 1
+        DO WHILE (idx <= lenfen)
+            c = fen(idx:idx)
+            IF (c == ' ') EXIT
+            IF (c == '/') THEN
+                rank = rank - 1
+                file = 1
+            ELSE IF (c >= '1' .AND. c <= '8') THEN
+                file = file + IACHAR(c) - IACHAR('0')
+            ELSE
+                CALL fen_char_to_piece(c, piece, color)
+                IF (piece /= NO_PIECE .AND. file <= 8 .AND. rank >= 1) THEN
+                    board%squares_piece(rank, file) = piece
+                    board%squares_color(rank, file) = color
+                    CALL add_piece_list_entry(board, file_rank_to_sq(file, rank), color)
+                    file = file + 1
+                ELSE
+                    RETURN
+                END IF
+            END IF
+            idx = idx + 1
+        END DO
+
+        IF (idx > lenfen) RETURN
+
+        part = INDEX(fen(idx:), ' ')
+        IF (part == 0) RETURN
+        side_str = ADJUSTL(fen(idx:idx+part-2))
+        IF (LEN_TRIM(side_str) == 0) RETURN
+        IF (side_str(1:1) == 'w') THEN
+            board%current_player = WHITE
+        ELSE IF (side_str(1:1) == 'b') THEN
+            board%current_player = BLACK
+        ELSE
+            RETURN
+        END IF
+        idx = idx + part
+
+        part = INDEX(fen(idx:), ' ')
+        IF (part == 0) RETURN
+        castle_str = ADJUSTL(fen(idx:idx+part-2))
+        IF (castle_str /= '-') THEN
+            IF (INDEX(castle_str, 'K') > 0) board%wc_k = .TRUE.
+            IF (INDEX(castle_str, 'Q') > 0) board%wc_q = .TRUE.
+            IF (INDEX(castle_str, 'k') > 0) board%bc_k = .TRUE.
+            IF (INDEX(castle_str, 'q') > 0) board%bc_q = .TRUE.
+        END IF
+        idx = idx + part
+
+        part = INDEX(fen(idx:), ' ')
+        IF (part == 0) part = LEN_TRIM(fen(idx:)) + 1
+        ep_str = ADJUSTL(fen(idx:idx+part-2))
+        IF (ep_str /= '-') THEN
+            board%ep_target_sq%file = char_to_file(ep_str(1:1))
+            board%ep_target_sq%rank = char_to_rank(ep_str(2:2))
+            IF (board%ep_target_sq%file == -1 .OR. board%ep_target_sq%rank == -1) RETURN
+            board%ep_target_present = .TRUE.
+        END IF
+
+        board%zobrist_key = compute_zobrist_hash(board)
+        ok = .TRUE.
+    END FUNCTION set_board_from_fen
+
+    FUNCTION board_to_fen(board, halfmove_clock, fullmove_number) RESULT(fen)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER, INTENT(IN), OPTIONAL :: halfmove_clock, fullmove_number
+        CHARACTER(LEN=128) :: fen
+
+        INTEGER :: rank, file, empty_count, hm_clock, fm_number
+        CHARACTER(LEN=16) :: token
+
+        fen = ''
+        DO rank = 8, 1, -1
+            empty_count = 0
+            DO file = 1, 8
+                IF (board%squares_piece(rank, file) == NO_PIECE) THEN
+                    empty_count = empty_count + 1
+                ELSE
+                    IF (empty_count > 0) THEN
+                        WRITE(token, '(I0)') empty_count
+                        CALL append_fen_fragment(fen, TRIM(token))
+                        empty_count = 0
+                    END IF
+                    CALL append_fen_fragment(fen, piece_to_fen_char(board%squares_piece(rank, file), &
+                        board%squares_color(rank, file)))
+                END IF
+            END DO
+            IF (empty_count > 0) THEN
+                WRITE(token, '(I0)') empty_count
+                CALL append_fen_fragment(fen, TRIM(token))
+            END IF
+            IF (rank > 1) CALL append_fen_fragment(fen, '/')
+        END DO
+
+        CALL append_fen_fragment(fen, ' ')
+        IF (board%current_player == WHITE) THEN
+            CALL append_fen_fragment(fen, 'w')
+        ELSE
+            CALL append_fen_fragment(fen, 'b')
+        END IF
+
+        CALL append_fen_fragment(fen, ' ')
+        token = ''
+        IF (board%wc_k) token = TRIM(token) // 'K'
+        IF (board%wc_q) token = TRIM(token) // 'Q'
+        IF (board%bc_k) token = TRIM(token) // 'k'
+        IF (board%bc_q) token = TRIM(token) // 'q'
+        IF (LEN_TRIM(token) == 0) token = '-'
+        CALL append_fen_fragment(fen, TRIM(token))
+
+        CALL append_fen_fragment(fen, ' ')
+        IF (board%ep_target_present) THEN
+            token = ''
+            token(1:1) = ACHAR(IACHAR('a') + board%ep_target_sq%file - 1)
+            token(2:2) = ACHAR(IACHAR('0') + board%ep_target_sq%rank)
+            CALL append_fen_fragment(fen, token(1:2))
+        ELSE
+            CALL append_fen_fragment(fen, '-')
+        END IF
+
+        hm_clock = 0
+        IF (PRESENT(halfmove_clock)) hm_clock = MAX(0, halfmove_clock)
+        fm_number = 1
+        IF (PRESENT(fullmove_number)) fm_number = MAX(1, fullmove_number)
+
+        CALL append_fen_fragment(fen, ' ')
+        WRITE(token, '(I0)') hm_clock
+        CALL append_fen_fragment(fen, TRIM(token))
+        CALL append_fen_fragment(fen, ' ')
+        WRITE(token, '(I0)') fm_number
+        CALL append_fen_fragment(fen, TRIM(token))
+    END FUNCTION board_to_fen
+
     ! --- Print Board to Console ---
     ! Displays the current board state in a human-readable format.
     !
@@ -231,6 +391,43 @@ CONTAINS
         END IF
         ! Add EP target, Castling rights printout if desired
     END SUBROUTINE print_board
+
+    SUBROUTINE fen_char_to_piece(c, piece, color)
+        CHARACTER(LEN=1), INTENT(IN) :: c
+        INTEGER, INTENT(OUT) :: piece, color
+
+        SELECT CASE(c)
+        CASE('P'); piece = PAWN; color = WHITE
+        CASE('N'); piece = KNIGHT; color = WHITE
+        CASE('B'); piece = BISHOP; color = WHITE
+        CASE('R'); piece = ROOK; color = WHITE
+        CASE('Q'); piece = QUEEN; color = WHITE
+        CASE('K'); piece = KING; color = WHITE
+        CASE('p'); piece = PAWN; color = BLACK
+        CASE('n'); piece = KNIGHT; color = BLACK
+        CASE('b'); piece = BISHOP; color = BLACK
+        CASE('r'); piece = ROOK; color = BLACK
+        CASE('q'); piece = QUEEN; color = BLACK
+        CASE('k'); piece = KING; color = BLACK
+        CASE DEFAULT
+            piece = NO_PIECE
+            color = NO_COLOR
+        END SELECT
+    END SUBROUTINE fen_char_to_piece
+
+    SUBROUTINE add_piece_list_entry(board, sq, color)
+        TYPE(Board_Type), INTENT(INOUT) :: board
+        TYPE(Square_Type), INTENT(IN) :: sq
+        INTEGER, INTENT(IN) :: color
+
+        IF (color == WHITE) THEN
+            board%num_white_pieces = board%num_white_pieces + 1
+            board%white_pieces(board%num_white_pieces) = sq
+        ELSE IF (color == BLACK) THEN
+            board%num_black_pieces = board%num_black_pieces + 1
+            board%black_pieces(board%num_black_pieces) = sq
+        END IF
+    END SUBROUTINE add_piece_list_entry
 
 
     ! --- Find King of a given color ---
@@ -370,6 +567,40 @@ CONTAINS
         END DO
 
     END FUNCTION is_square_attacked
+
+    CHARACTER(LEN=1) FUNCTION piece_to_fen_char(piece, color) RESULT(fen_char)
+        INTEGER, INTENT(IN) :: piece, color
+
+        SELECT CASE (piece)
+        CASE (PAWN)
+            fen_char = 'P'
+        CASE (KNIGHT)
+            fen_char = 'N'
+        CASE (BISHOP)
+            fen_char = 'B'
+        CASE (ROOK)
+            fen_char = 'R'
+        CASE (QUEEN)
+            fen_char = 'Q'
+        CASE (KING)
+            fen_char = 'K'
+        CASE DEFAULT
+            fen_char = '?'
+        END SELECT
+        IF (color == BLACK .AND. fen_char >= 'A' .AND. fen_char <= 'Z') THEN
+            fen_char = ACHAR(IACHAR(fen_char) + 32)
+        END IF
+    END FUNCTION piece_to_fen_char
+
+    SUBROUTINE append_fen_fragment(buffer, fragment)
+        CHARACTER(LEN=*), INTENT(INOUT) :: buffer
+        CHARACTER(LEN=*), INTENT(IN) :: fragment
+        INTEGER :: used_len, copy_len
+
+        used_len = LEN_TRIM(buffer)
+        copy_len = MIN(LEN_TRIM(fragment), LEN(buffer) - used_len)
+        IF (copy_len > 0) buffer(used_len + 1:used_len + copy_len) = fragment(1:copy_len)
+    END SUBROUTINE append_fen_fragment
 
     ! --- Remove a piece from a piece list ---
     ! Removes a piece at the given square from the appropriate piece list.

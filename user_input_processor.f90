@@ -1,9 +1,9 @@
 MODULE User_Input_Processor
     USE Chess_Types
-    USE Evaluation, ONLY: evaluate_board
     USE Notation_Utils, ONLY: move_matches_input, to_lower_string
     USE Opening_Book, ONLY: Opening_Book_Type
     USE Move_Suggestion, ONLY: suggest_move_for_position
+    USE Search, ONLY: display_eval_white_cp
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: get_human_move, print_in_game_help
@@ -25,7 +25,7 @@ CONTAINS
     !   LOGICAL: .TRUE. if a valid move was found, .FALSE. otherwise (e.g., quit, invalid input)
     LOGICAL FUNCTION get_human_move(board, legal_moves, num_legal_moves, search_depth, move_history, num_half_moves, &
                                     white_book, black_book, show_eval_after_ai, resign_enabled, resign_threshold_cp, &
-                                    chosen_move, game_over_flag, autoplay_requested, takeback_requested)
+                                    verbose_prompt, chosen_move, game_over_flag, autoplay_requested, takeback_requested)
         TYPE(Board_Type), INTENT(IN) :: board
         TYPE(Move_Type), DIMENSION(MAX_MOVES), INTENT(IN) :: legal_moves
         INTEGER, INTENT(IN) :: num_legal_moves
@@ -36,6 +36,7 @@ CONTAINS
         LOGICAL, INTENT(INOUT) :: show_eval_after_ai
         LOGICAL, INTENT(INOUT) :: resign_enabled
         INTEGER, INTENT(INOUT) :: resign_threshold_cp
+        LOGICAL, INTENT(IN) :: verbose_prompt
         TYPE(Move_Type), INTENT(OUT) :: chosen_move
         LOGICAL, INTENT(INOUT) :: game_over_flag
         LOGICAL, INTENT(OUT) :: autoplay_requested, takeback_requested
@@ -46,7 +47,7 @@ CONTAINS
         CHARACTER(LEN=32) :: hint_text
         LOGICAL :: move_found_internal
         INTEGER :: i
-        INTEGER :: score_cp, white_score_cp
+        INTEGER :: white_score_cp
         INTEGER :: ios
         REAL :: threshold_pawns
         TYPE(Move_Type) :: hint_move
@@ -59,8 +60,10 @@ CONTAINS
         autoplay_requested = .FALSE.
         takeback_requested = .FALSE.
 
-        PRINT *, "" ! Newline
-        PRINT *, "Your turn. Enter move (e.g., d4, Nf6, cxd5, O-O, e2e4, score, suggest, autoplay, or takeback): "
+        IF (verbose_prompt) THEN
+            PRINT *, "" ! Newline
+        PRINT *, "Your turn. Enter move (e.g., d4, Nf6, cxd5, dc, O-O, e2e4, score, suggest, autoplay, or takeback): "
+        END IF
 
         DO WHILE (.NOT. move_found_internal .AND. .NOT. game_over_flag)
             READ(*, '(A)') user_input
@@ -83,12 +86,7 @@ CONTAINS
             END IF
 
             IF (lower_input == 'score') THEN
-                score_cp = evaluate_board(board)
-                IF (board%current_player == BLACK) THEN
-                    white_score_cp = -score_cp
-                ELSE
-                    white_score_cp = score_cp
-                END IF
+                white_score_cp = display_eval_white_cp(board)
                 WRITE(*, '(A,F7.2,A)') "Score (White perspective): ", REAL(white_score_cp) / 100.0, " pawns"
                 CYCLE
             END IF
@@ -192,7 +190,7 @@ CONTAINS
 
     SUBROUTINE print_in_game_help()
         PRINT *, "Commands:"
-        PRINT *, "  move        Play a move in SAN or coordinate form, e.g. d4, Nf6, cxd5, e2e4"
+        PRINT *, "  move        Play a move in SAN, coordinate, or unambiguous pawn-capture shorthand like dc"
         PRINT *, "  ?           Suggest a move"
         PRINT *, "  suggest     Suggest a move"
         PRINT *, "  autoplay    Let the computer play both sides from here"

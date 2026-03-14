@@ -8,17 +8,32 @@ CORE_SRC = app_defaults.f90 board_utils.f90 chess_types.f90 evaluation.f90 game_
 CORE_OBJ = $(CORE_SRC:.f90=.o)
 CONSOLE_OBJ = chess.o
 GUI_OBJ = chessgui.o
+CLICK_GUI_OBJ = chessclickgui.o
+BOOK_EDITOR_OBJ = bookeditgui.o
+BOOK_TEXT_EDITOR_OBJ = booktexteditgui.o
 
 # Executables
 CONSOLE_EXE = chess
 GUI_EXE = chessgui
+CLICK_GUI_EXE = chessclickgui
+BOOK_EDITOR_EXE = bookeditgui
+BOOK_TEXT_EDITOR_EXE = booktexteditgui
 
-all: $(CONSOLE_EXE) $(GUI_EXE)
+all: $(CONSOLE_EXE) $(GUI_EXE) $(CLICK_GUI_EXE) $(BOOK_EDITOR_EXE) $(BOOK_TEXT_EDITOR_EXE)
 
 $(CONSOLE_EXE): $(CORE_OBJ) $(CONSOLE_OBJ)
 	$(FC) $(FFLAGS) -o $@ $^
 
 $(GUI_EXE): $(CORE_OBJ) $(GUI_OBJ)
+	$(FC) $(FFLAGS) -o $@ $^ $(GUI_LDFLAGS)
+
+$(CLICK_GUI_EXE): $(CORE_OBJ) $(CLICK_GUI_OBJ)
+	$(FC) $(FFLAGS) -o $@ $^ $(GUI_LDFLAGS)
+
+$(BOOK_EDITOR_EXE): chess_types.o transposition_table.o board_utils.o move_generation.o make_unmake.o notation_utils.o opening_book.o $(BOOK_EDITOR_OBJ)
+	$(FC) $(FFLAGS) -o $@ $^ $(GUI_LDFLAGS)
+
+$(BOOK_TEXT_EDITOR_EXE): chess_types.o transposition_table.o board_utils.o move_generation.o make_unmake.o notation_utils.o opening_book.o $(BOOK_TEXT_EDITOR_OBJ)
 	$(FC) $(FFLAGS) -o $@ $^ $(GUI_LDFLAGS)
 
 # Object file dependencies (based on which modules each file USEs)
@@ -42,10 +57,13 @@ game_state_checker.o: chess_types.o board_utils.o move_generation.o
 uci_driver.o: chess_types.o board_utils.o move_generation.o make_unmake.o search.o transposition_table.o
 chess.o: app_defaults.o board_utils.o chess_types.o game_time_utils.o make_unmake.o move_generation.o search_debug_log.o search.o user_input_processor.o transposition_table.o game_state_checker.o notation_utils.o opening_book.o move_suggestion.o opening_sequence.o uci_driver.o
 chessgui.o: app_defaults.o board_utils.o chess_types.o evaluation.o game_state_checker.o game_time_utils.o gui_debug_log.o make_unmake.o move_generation.o search_debug_log.o search.o transposition_table.o notation_utils.o move_suggestion.o
+chessclickgui.o: app_defaults.o board_utils.o chess_types.o evaluation.o game_state_checker.o game_time_utils.o gui_debug_log.o make_unmake.o move_generation.o search_debug_log.o search.o transposition_table.o notation_utils.o move_suggestion.o
+bookeditgui.o: board_utils.o chess_types.o move_generation.o make_unmake.o notation_utils.o opening_book.o transposition_table.o
+booktexteditgui.o: board_utils.o chess_types.o move_generation.o make_unmake.o notation_utils.o opening_book.o transposition_table.o
 
 # Compile rule
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $<
 
 clean:
-	rm -f *.o *.mod $(CONSOLE_EXE) $(GUI_EXE)
+	rm -f *.o *.mod $(CONSOLE_EXE) $(GUI_EXE) $(CLICK_GUI_EXE) $(BOOK_EDITOR_EXE) $(BOOK_TEXT_EDITOR_EXE)

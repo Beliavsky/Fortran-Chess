@@ -1,10 +1,10 @@
 MODULE UCI_Driver
     USE Chess_Types
-    USE Board_Utils, ONLY: char_to_file, char_to_rank, file_rank_to_sq, init_board
+    USE Board_Utils, ONLY: char_to_file, char_to_rank, init_board, set_board_from_fen
     USE Move_Generation, ONLY: generate_moves
     USE Make_Unmake, ONLY: make_move
     USE Search, ONLY: find_best_move
-    USE Transposition_Table, ONLY: init_zobrist_keys, compute_zobrist_hash
+    USE Transposition_Table, ONLY: init_zobrist_keys
     USE Evaluation, ONLY: evaluate_board
     IMPLICIT NONE
     PRIVATE
@@ -132,121 +132,6 @@ CONTAINS
         fen = TRIM(ADJUSTL(line(fen_pos+3:fen_end)))
         ok = set_board_from_fen(board, fen)
     END SUBROUTINE handle_fen
-
-    LOGICAL FUNCTION set_board_from_fen(board, fen) RESULT(ok)
-        TYPE(Board_Type), INTENT(INOUT) :: board
-        CHARACTER(LEN=*), INTENT(IN) :: fen
-        CHARACTER(LEN=16) :: side_str, castle_str, ep_str
-        INTEGER :: rank, file, idx, lenfen, part
-        CHARACTER(LEN=1) :: c
-        INTEGER :: piece, color
-
-        ok = .FALSE.
-        board%squares_piece = NO_PIECE
-        board%squares_color = NO_COLOR
-        board%num_white_pieces = 0
-        board%num_black_pieces = 0
-        board%wc_k = .FALSE.; board%wc_q = .FALSE.; board%bc_k = .FALSE.; board%bc_q = .FALSE.
-        board%ep_target_present = .FALSE.; board%ep_target_sq%file = 0; board%ep_target_sq%rank = 0
-
-        lenfen = LEN_TRIM(fen)
-        IF (lenfen == 0) RETURN
-
-        ! Parse piece placement
-        rank = 8; file = 1; idx = 1
-        DO WHILE (idx <= lenfen)
-            c = fen(idx:idx)
-            IF (c == ' ') EXIT
-            IF (c == '/') THEN
-                rank = rank - 1
-                file = 1
-            ELSE IF (c >= '1' .AND. c <= '8') THEN
-                file = file + IACHAR(c) - IACHAR('0')
-            ELSE
-                CALL fen_char_to_piece(c, piece, color)
-                IF (piece /= NO_PIECE .AND. file <= 8 .AND. rank >= 1) THEN
-                    board%squares_piece(rank, file) = piece
-                    board%squares_color(rank, file) = color
-                    CALL add_piece_list_entry(board, file_rank_to_sq(file, rank), color)
-                    file = file + 1
-                END IF
-            END IF
-            idx = idx + 1
-        END DO
-
-        ! Side to move
-        part = INDEX(fen(idx:), ' ')
-        IF (part == 0) RETURN
-        side_str = ADJUSTL(fen(idx:idx+part-2))
-        IF (LEN_TRIM(side_str) == 0) RETURN
-        IF (side_str(1:1) == 'w') THEN
-            board%current_player = WHITE
-        ELSE
-            board%current_player = BLACK
-        END IF
-        idx = idx + part
-
-        ! Castling
-        part = INDEX(fen(idx:), ' ')
-        IF (part == 0) RETURN
-        castle_str = ADJUSTL(fen(idx:idx+part-2))
-        IF (castle_str /= '-') THEN
-            IF (INDEX(castle_str, 'K') > 0) board%wc_k = .TRUE.
-            IF (INDEX(castle_str, 'Q') > 0) board%wc_q = .TRUE.
-            IF (INDEX(castle_str, 'k') > 0) board%bc_k = .TRUE.
-            IF (INDEX(castle_str, 'q') > 0) board%bc_q = .TRUE.
-        END IF
-        idx = idx + part
-
-        ! En passant
-        part = INDEX(fen(idx:), ' ')
-        IF (part == 0) part = LEN_TRIM(fen(idx:)) + 1
-        ep_str = ADJUSTL(fen(idx:idx+part-2))
-        IF (ep_str /= '-') THEN
-            board%ep_target_sq%file = char_to_file(ep_str(1:1))
-            board%ep_target_sq%rank = char_to_rank(ep_str(2:2))
-            IF (board%ep_target_sq%file /= -1 .AND. board%ep_target_sq%rank /= -1) THEN
-                board%ep_target_present = .TRUE.
-            END IF
-        END IF
-
-        board%zobrist_key = compute_zobrist_hash(board)
-        ok = .TRUE.
-    END FUNCTION set_board_from_fen
-
-    SUBROUTINE fen_char_to_piece(c, piece, color)
-        CHARACTER(LEN=1), INTENT(IN) :: c
-        INTEGER, INTENT(OUT) :: piece, color
-        SELECT CASE(c)
-        CASE('P'); piece = PAWN; color = WHITE
-        CASE('N'); piece = KNIGHT; color = WHITE
-        CASE('B'); piece = BISHOP; color = WHITE
-        CASE('R'); piece = ROOK; color = WHITE
-        CASE('Q'); piece = QUEEN; color = WHITE
-        CASE('K'); piece = KING; color = WHITE
-        CASE('p'); piece = PAWN; color = BLACK
-        CASE('n'); piece = KNIGHT; color = BLACK
-        CASE('b'); piece = BISHOP; color = BLACK
-        CASE('r'); piece = ROOK; color = BLACK
-        CASE('q'); piece = QUEEN; color = BLACK
-        CASE('k'); piece = KING; color = BLACK
-        CASE DEFAULT
-            piece = NO_PIECE; color = NO_COLOR
-        END SELECT
-    END SUBROUTINE fen_char_to_piece
-
-    SUBROUTINE add_piece_list_entry(board, sq, color)
-        TYPE(Board_Type), INTENT(INOUT) :: board
-        TYPE(Square_Type), INTENT(IN) :: sq
-        INTEGER, INTENT(IN) :: color
-        IF (color == WHITE) THEN
-            board%num_white_pieces = board%num_white_pieces + 1
-            board%white_pieces(board%num_white_pieces) = sq
-        ELSE IF (color == BLACK) THEN
-            board%num_black_pieces = board%num_black_pieces + 1
-            board%black_pieces(board%num_black_pieces) = sq
-        END IF
-    END SUBROUTINE add_piece_list_entry
 
     LOGICAL FUNCTION apply_uci_move(board, mv_str) RESULT(ok)
         TYPE(Board_Type), INTENT(INOUT) :: board

@@ -14,8 +14,8 @@ MODULE Transposition_Table
 
     ! --- Transposition Table Constants ---
     INTEGER, PARAMETER :: HASH_FLAG_EXACT = 0
-    INTEGER, PARAMETER :: HASH_FLAG_ALPHA = 1 ! Lower bound
-    INTEGER, PARAMETER :: HASH_FLAG_BETA  = 2 ! Upper bound
+    INTEGER, PARAMETER :: HASH_FLAG_ALPHA = 1 ! Upper bound (fail-low)
+    INTEGER, PARAMETER :: HASH_FLAG_BETA  = 2 ! Lower bound (fail-high / beta cutoff)
     INTEGER, PARAMETER :: TT_SIZE = 2**20 ! ~1 million entries
 
     ! --- Zobrist Keys (64-bit random numbers) ---
@@ -40,6 +40,7 @@ MODULE Transposition_Table
     ! --- Search Generation Counter ---
     ! Incremented each time a new search starts, used for aging entries
     INTEGER :: tt_generation = 0
+    LOGICAL :: zobrist_initialized = .FALSE.
 
 CONTAINS
 
@@ -61,6 +62,7 @@ CONTAINS
     ! --- Initialize Zobrist Keys ---
     SUBROUTINE init_zobrist_keys()
         INTEGER :: i, j, k, l
+        IF (zobrist_initialized) RETURN
         ! Seed the random number generator
         CALL RANDOM_SEED()
 
@@ -87,6 +89,7 @@ CONTAINS
         DO i = 1, 8
             ZOBRIST_EP_FILE(i) = random_u64()
         END DO
+        zobrist_initialized = .TRUE.
     END SUBROUTINE init_zobrist_keys
 
     ! --- Compute Zobrist Hash from Scratch ---
@@ -190,10 +193,10 @@ CONTAINS
             IF (entry%depth >= depth) THEN
                 IF (entry%flag == HASH_FLAG_EXACT) THEN
                     found = .TRUE.
-                ELSE IF (entry%flag == HASH_FLAG_ALPHA .AND. entry%score > alpha) THEN
-                    alpha = entry%score
-                ELSE IF (entry%flag == HASH_FLAG_BETA .AND. entry%score < beta) THEN
+                ELSE IF (entry%flag == HASH_FLAG_ALPHA .AND. entry%score < beta) THEN
                     beta = entry%score
+                ELSE IF (entry%flag == HASH_FLAG_BETA .AND. entry%score > alpha) THEN
+                    alpha = entry%score
                 END IF
                 
                 IF (alpha >= beta) THEN

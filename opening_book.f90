@@ -1,6 +1,10 @@
 MODULE Opening_Book
     USE Chess_Types
     USE Notation_Utils, ONLY: normalize_move_text, move_matches_input
+    USE Board_Utils, ONLY: init_board
+    USE Make_Unmake, ONLY: make_move
+    USE Move_Generation, ONLY: generate_moves
+    USE Transposition_Table, ONLY: init_zobrist_keys, ZOBRIST_EP_FILE
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Opening_Book_Type, load_opening_book, choose_book_move, apply_opening_book_fix
@@ -20,7 +24,11 @@ MODULE Opening_Book
         CHARACTER(LEN=512) :: error_text = ''
         CHARACTER(LEN=512) :: replacement_line = ''
         INTEGER, ALLOCATABLE, DIMENSION(:) :: line_lengths
+        INTEGER, ALLOCATABLE, DIMENSION(:) :: source_line_numbers
         CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:, :) :: lines
+        INTEGER :: num_positions = 0
+        INTEGER(KIND=8), ALLOCATABLE, DIMENSION(:) :: position_keys
+        CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:) :: position_moves
     END TYPE Opening_Book_Type
 
 CONTAINS
@@ -32,7 +40,7 @@ CONTAINS
         INTEGER :: unit_no, ios, line_no, prev_len, entry_len, base_len, line_start, next_expected
         CHARACTER(LEN=512) :: raw_line, trimmed_line
         CHARACTER(LEN=32), DIMENSION(MAX_BOOK_MOVES) :: prev_sequence, parsed_moves, full_sequence
-        INTEGER, ALLOCATABLE, DIMENSION(:) :: temp_lengths
+        INTEGER, ALLOCATABLE, DIMENSION(:) :: temp_lengths, temp_source_lines
         CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:, :) :: temp_lines
         INTEGER :: parsed_count
         CHARACTER(LEN=256) :: err_msg, suggestion
@@ -48,6 +56,7 @@ CONTAINS
         book%suggestion = ''
         book%error_text = ''
         book%replacement_line = ''
+        book%num_positions = 0
         prev_len = 0
         prev_sequence = ''
 
@@ -59,15 +68,17 @@ CONTAINS
 
         book%found = .TRUE.
         ALLOCATE(temp_lengths(MAX_BOOK_LINES))
+        ALLOCATE(temp_source_lines(MAX_BOOK_LINES))
         ALLOCATE(temp_lines(MAX_BOOK_MOVES, MAX_BOOK_LINES))
         temp_lengths = 0
+        temp_source_lines = 0
         temp_lines = ''
         unit_no = 41
         OPEN(unit=unit_no, file=filename, status='OLD', action='READ', iostat=ios)
         IF (ios /= 0) THEN
             book%error_message = 'Could not open opening book file.'
             book%suggestion = 'Check the file path and permissions.'
-            DEALLOCATE(temp_lengths, temp_lines)
+            DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
             RETURN
         END IF
 
@@ -88,7 +99,7 @@ CONTAINS
                 book%error_text = TRIM(raw_line)
                 book%replacement_line = replacement_line
                 CLOSE(unit_no)
-                DEALLOCATE(temp_lengths, temp_lines)
+                DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
                 RETURN
             END IF
 
@@ -100,7 +111,7 @@ CONTAINS
                     book%error_text = TRIM(raw_line)
                     book%replacement_line = build_book_line(parsed_moves, parsed_count, 1)
                     CLOSE(unit_no)
-                    DEALLOCATE(temp_lengths, temp_lines)
+                    DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
                     RETURN
                 END IF
                 base_len = 0
@@ -117,7 +128,7 @@ CONTAINS
                     book%error_text = TRIM(raw_line)
                     book%replacement_line = build_book_line(parsed_moves, parsed_count, next_expected)
                     CLOSE(unit_no)
-                    DEALLOCATE(temp_lengths, temp_lines)
+                    DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
                     RETURN
                 END IF
             END IF
@@ -129,7 +140,7 @@ CONTAINS
                 book%suggestion = 'Increase structure depth by splitting into shorter variations.'
                 book%error_text = TRIM(raw_line)
                 CLOSE(unit_no)
-                DEALLOCATE(temp_lengths, temp_lines)
+                DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
                 RETURN
             END IF
             IF (book%num_lines >= MAX_BOOK_LINES) THEN
@@ -138,7 +149,7 @@ CONTAINS
                 book%suggestion = 'Reduce the book size or raise MAX_BOOK_LINES in opening_book.f90.'
                 book%error_text = TRIM(raw_line)
                 CLOSE(unit_no)
-                DEALLOCATE(temp_lengths, temp_lines)
+                DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
                 RETURN
             END IF
 
@@ -148,6 +159,7 @@ CONTAINS
 
             book%num_lines = book%num_lines + 1
             temp_lengths(book%num_lines) = entry_len
+            temp_source_lines(book%num_lines) = line_no
             temp_lines(:, book%num_lines) = ''
             temp_lines(1:entry_len, book%num_lines) = full_sequence(1:entry_len)
 
@@ -158,12 +170,14 @@ CONTAINS
         CLOSE(unit_no)
         IF (book%num_lines > 0) THEN
             ALLOCATE(book%line_lengths(book%num_lines))
+            ALLOCATE(book%source_line_numbers(book%num_lines))
             ALLOCATE(book%lines(MAX_BOOK_MOVES, book%num_lines))
             book%line_lengths = temp_lengths(1:book%num_lines)
+            book%source_line_numbers = temp_source_lines(1:book%num_lines)
             book%lines = temp_lines(:, 1:book%num_lines)
-            book%valid = .TRUE.
+            CALL build_position_index(book)
         END IF
-        DEALLOCATE(temp_lengths, temp_lines)
+        DEALLOCATE(temp_lengths, temp_source_lines, temp_lines)
     END SUBROUTINE load_opening_book
 
     SUBROUTINE apply_opening_book_fix(book, success, error_message)
@@ -253,6 +267,71 @@ CONTAINS
         success = .TRUE.
     END SUBROUTINE apply_opening_book_fix
 
+    SUBROUTINE build_position_index(book)
+        TYPE(Opening_Book_Type), INTENT(INOUT) :: book
+
+        TYPE(Board_Type) :: board
+        TYPE(Move_Type), DIMENSION(MAX_MOVES) :: legal_moves
+        TYPE(Move_Type) :: chosen_move
+        TYPE(UnmakeInfo_Type) :: move_info
+        INTEGER(KIND=8), ALLOCATABLE, DIMENSION(:) :: temp_keys
+        CHARACTER(LEN=32), ALLOCATABLE, DIMENSION(:) :: temp_moves
+        INTEGER :: total_entries, i, j, num_legal_moves, entry_idx, move_idx
+        LOGICAL :: found_move
+
+        book%valid = .FALSE.
+        book%num_positions = 0
+        IF (book%num_lines <= 0) THEN
+            book%valid = .TRUE.
+            RETURN
+        END IF
+
+        CALL init_zobrist_keys()
+        total_entries = SUM(book%line_lengths)
+        IF (total_entries <= 0) THEN
+            book%valid = .TRUE.
+            RETURN
+        END IF
+
+        ALLOCATE(temp_keys(total_entries))
+        ALLOCATE(temp_moves(total_entries))
+        temp_keys = 0_8
+        temp_moves = ''
+        entry_idx = 0
+
+        DO i = 1, book%num_lines
+            CALL init_board(board)
+            DO j = 1, book%line_lengths(i)
+                CALL generate_moves(board, legal_moves, num_legal_moves)
+                found_move = .FALSE.
+                DO move_idx = 1, num_legal_moves
+                    IF (move_matches_input(board, legal_moves(move_idx), legal_moves, num_legal_moves, book%lines(j, i))) THEN
+                        chosen_move = legal_moves(move_idx)
+                        found_move = .TRUE.
+                        EXIT
+                    END IF
+                END DO
+
+                IF (.NOT. found_move) EXIT
+
+                entry_idx = entry_idx + 1
+                temp_keys(entry_idx) = book_position_key(board)
+                temp_moves(entry_idx) = book%lines(j, i)
+                CALL make_move(board, chosen_move, move_info)
+            END DO
+        END DO
+
+        IF (entry_idx > 0) THEN
+            ALLOCATE(book%position_keys(entry_idx))
+            ALLOCATE(book%position_moves(entry_idx))
+            book%position_keys = temp_keys(1:entry_idx)
+            book%position_moves = temp_moves(1:entry_idx)
+        END IF
+        book%num_positions = entry_idx
+        book%valid = .TRUE.
+        DEALLOCATE(temp_keys, temp_moves)
+    END SUBROUTINE build_position_index
+
     LOGICAL FUNCTION choose_book_move(book, move_history, num_half_moves, board, legal_moves, num_legal_moves, chosen_move, chosen_text) RESULT(found)
         TYPE(Opening_Book_Type), INTENT(IN) :: book
         CHARACTER(LEN=*), DIMENSION(:), INTENT(IN) :: move_history
@@ -272,13 +351,18 @@ CONTAINS
         found = .FALSE.
         candidates = ''
         candidate_count = 0
+        chosen_move%from_sq%rank = 0
+        chosen_move%from_sq%file = 0
+        chosen_move%to_sq%rank = 0
+        chosen_move%to_sq%file = 0
         IF (.NOT. book%valid) RETURN
+        IF (book%num_positions <= 0) RETURN
+        IF (num_half_moves < 0) RETURN
+        IF (SIZE(move_history) < 0) RETURN
 
-        DO i = 1, book%num_lines
-            IF (book%line_lengths(i) <= num_half_moves) CYCLE
-            IF (.NOT. history_matches_prefix(book%lines(:, i), book%line_lengths(i), move_history, num_half_moves)) CYCLE
-
-            next_move_text = book%lines(num_half_moves + 1, i)
+        DO i = 1, book%num_positions
+            IF (book%position_keys(i) /= book_position_key(board)) CYCLE
+            next_move_text = book%position_moves(i)
             duplicate = .FALSE.
             DO j = 1, candidate_count
                 IF (TRIM(candidates(j)) == TRIM(next_move_text)) THEN
@@ -319,6 +403,38 @@ CONTAINS
             END DO
         END DO
     END FUNCTION choose_book_move
+
+    INTEGER(KIND=8) FUNCTION book_position_key(board) RESULT(key)
+        TYPE(Board_Type), INTENT(IN) :: board
+
+        key = board%zobrist_key
+        IF (board%ep_target_present .AND. .NOT. en_passant_capture_available(board)) THEN
+            key = IEOR(key, ZOBRIST_EP_FILE(board%ep_target_sq%file))
+        END IF
+    END FUNCTION book_position_key
+
+    LOGICAL FUNCTION en_passant_capture_available(board) RESULT(is_available)
+        TYPE(Board_Type), INTENT(IN) :: board
+        INTEGER :: pawn_rank, test_file
+
+        is_available = .FALSE.
+        IF (.NOT. board%ep_target_present) RETURN
+
+        IF (board%current_player == WHITE) THEN
+            pawn_rank = board%ep_target_sq%rank - 1
+        ELSE
+            pawn_rank = board%ep_target_sq%rank + 1
+        END IF
+
+        IF (pawn_rank < 1 .OR. pawn_rank > BOARD_SIZE) RETURN
+        DO test_file = MAX(1, board%ep_target_sq%file - 1), MIN(BOARD_SIZE, board%ep_target_sq%file + 1)
+            IF (test_file == board%ep_target_sq%file) CYCLE
+            IF (board%squares_piece(pawn_rank, test_file) /= PAWN) CYCLE
+            IF (board%squares_color(pawn_rank, test_file) /= board%current_player) CYCLE
+            is_available = .TRUE.
+            RETURN
+        END DO
+    END FUNCTION en_passant_capture_available
 
     LOGICAL FUNCTION history_matches_prefix(book_line, line_len, move_history, num_half_moves)
         CHARACTER(LEN=32), DIMENSION(MAX_BOOK_MOVES), INTENT(IN) :: book_line
@@ -443,7 +559,10 @@ CONTAINS
         IF (i == 1) THEN
             RETURN
         END IF
-        IF (i > LEN_TRIM(token) .OR. token(i:i) /= '.') THEN
+        IF (i > LEN_TRIM(token)) THEN
+            RETURN
+        END IF
+        IF (token(i:i) /= '.') THEN
             RETURN
         END IF
 
@@ -457,7 +576,8 @@ CONTAINS
         END IF
 
         dot_count = 0
-        DO WHILE (i <= LEN_TRIM(token) .AND. token(i:i) == '.')
+        DO WHILE (i <= LEN_TRIM(token))
+            IF (token(i:i) /= '.') EXIT
             dot_count = dot_count + 1
             i = i + 1
         END DO

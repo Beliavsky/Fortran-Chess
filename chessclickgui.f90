@@ -1,4 +1,4 @@
-MODULE Chess_GUI_App
+MODULE Chess_Click_GUI_App
     USE, INTRINSIC :: iso_c_binding
     USE App_Defaults, ONLY: DEFAULT_SEARCH_DEPTH
     USE Chess_Types
@@ -20,7 +20,7 @@ MODULE Chess_GUI_App
     USE Transposition_Table, ONLY: init_zobrist_keys
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: run_chess_gui
+    PUBLIC :: run_chess_click_gui
 
     INTEGER(c_int), PARAMETER :: WM_CREATE = 1_c_int
     INTEGER(c_int), PARAMETER :: WM_DESTROY = 2_c_int
@@ -223,6 +223,8 @@ MODULE Chess_GUI_App
     INTEGER(c_intptr_t), SAVE :: original_move_edit_proc = 0_c_intptr_t
     LOGICAL, SAVE :: gui_suppress_move_edit_submit = .FALSE.
     LOGICAL, SAVE :: gui_start_from_fen_pending = .FALSE.
+    INTEGER, SAVE :: gui_selected_from_rank = 0
+    INTEGER, SAVE :: gui_selected_from_file = 0
 
     INTERFACE
         FUNCTION RegisterClassExA(window_class) BIND(C, NAME="RegisterClassExA")
@@ -557,7 +559,7 @@ MODULE Chess_GUI_App
 
 CONTAINS
 
-    RECURSIVE SUBROUTINE run_chess_gui()
+    RECURSIVE SUBROUTINE run_chess_click_gui()
         TYPE(WNDCLASSEXA) :: window_class
         TYPE(MSG) :: message_data
         TYPE(c_ptr) :: window_handle
@@ -579,7 +581,7 @@ CONTAINS
 
         CALL set_c_string('FortranChessGUI', class_name)
         CALL set_c_string('FortranChessEvalGraph', graph_class_name)
-        CALL set_c_string('Fortran Chess GUI', window_title)
+        CALL set_c_string('Fortran Chess Click GUI', window_title)
 
         gui_instance = GetModuleHandleA(c_null_ptr)
         CALL log_gui_value('gui_instance', intptr_to_text(transfer_ptr(gui_instance)))
@@ -638,7 +640,7 @@ CONTAINS
         CALL release_piece_images()
         IF (gdiplus_started) CALL GdiplusShutdown(gdiplus_token)
         CALL finish_gui_debug_session('GUI loop exited normally.')
-    END SUBROUTINE run_chess_gui
+    END SUBROUTINE run_chess_click_gui
 
     RECURSIVE INTEGER(c_intptr_t) FUNCTION window_proc(hwnd, msg, wparam, lparam) BIND(C)
         TYPE(c_ptr), VALUE :: hwnd
@@ -797,6 +799,10 @@ CONTAINS
         CASE (WM_TIMER)
             CALL log_gui_message('WM_TIMER', wparam, lparam)
             CALL on_gui_timer(hwnd, wparam)
+            window_proc = 0_c_intptr_t
+        CASE (WM_LBUTTONDOWN)
+            CALL log_gui_message('WM_LBUTTONDOWN', wparam, lparam)
+            CALL handle_board_click(hwnd, lparam)
             window_proc = 0_c_intptr_t
         CASE (WM_DESTROY)
             CALL log_gui_message('WM_DESTROY', wparam, lparam)
@@ -1089,7 +1095,7 @@ CONTAINS
         TYPE(c_ptr), VALUE :: device_context, hwnd
         TYPE(Board_Type) :: display_board
         TYPE(RECT) :: client_rect, square_rect
-        TYPE(c_ptr) :: light_brush, dark_brush, background_brush, graphics
+        TYPE(c_ptr) :: light_brush, dark_brush, background_brush, graphics, highlight_pen, old_object, ignored_object
         INTEGER(c_int) :: ignored_int
         INTEGER(c_long) :: ignored_color
         INTEGER :: rank, file, board_rank, board_file, color_idx, piece_idx
@@ -1108,10 +1114,11 @@ CONTAINS
 
         light_brush = CreateSolidBrush(rgb_color(240, 217, 181))
         dark_brush = CreateSolidBrush(rgb_color(181, 136, 99))
+        highlight_pen = CreatePen(PS_SOLID, 3_c_int, rgb_color(210, 60, 40))
         ignored_int = SetBkMode(device_context, TRANSPARENT)
         ignored_color = SetTextColor(device_context, rgb_color(40, 40, 40))
-        CALL draw_text(device_context, BOARD_LEFT, 32_c_int, 'Fortran Chess GUI')
-        CALL draw_text(device_context, BOARD_LEFT, 52_c_int, 'Move entry accepts SAN, coordinate, or pawn-capture shorthand like dc.')
+        CALL draw_text(device_context, BOARD_LEFT, 32_c_int, 'Fortran Chess Click GUI')
+        CALL draw_text(device_context, BOARD_LEFT, 52_c_int, 'Click a piece, then click its destination square.')
         CALL get_display_board(display_board)
 
         graphics = c_null_ptr
@@ -1136,6 +1143,16 @@ CONTAINS
                     ignored_int = FillRect(device_context, square_rect, light_brush)
                 ELSE
                     ignored_int = FillRect(device_context, square_rect, dark_brush)
+                END IF
+
+                IF (.NOT. gui_replay_mode .AND. board_rank == gui_selected_from_rank .AND. board_file == gui_selected_from_file) THEN
+                    old_object = SelectObject(device_context, highlight_pen)
+                    ignored_int = MoveToEx(device_context, INT(square_rect%left, c_int), INT(square_rect%top, c_int), c_null_ptr)
+                    ignored_int = LineTo(device_context, INT(square_rect%right, c_int), INT(square_rect%top, c_int))
+                    ignored_int = LineTo(device_context, INT(square_rect%right, c_int), INT(square_rect%bottom, c_int))
+                    ignored_int = LineTo(device_context, INT(square_rect%left, c_int), INT(square_rect%bottom, c_int))
+                    ignored_int = LineTo(device_context, INT(square_rect%left, c_int), INT(square_rect%top, c_int))
+                    ignored_object = SelectObject(device_context, old_object)
                 END IF
 
                 piece_idx = display_board%squares_piece(board_rank, board_file)
@@ -1166,6 +1183,7 @@ CONTAINS
         END DO
 
         IF (C_ASSOCIATED(graphics)) ignored_int = GdipDeleteGraphics(graphics)
+        ignored_int = DeleteObject(highlight_pen)
         ignored_int = DeleteObject(light_brush)
         ignored_int = DeleteObject(dark_brush)
         CALL log_gui_checkpoint('draw_gui', 'completed')
@@ -1486,6 +1504,8 @@ CONTAINS
         gui_autoplay_mode = .FALSE.
         gui_paused = .FALSE.
         gui_replay_mode = .FALSE.
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
         gui_game_winner_color = NO_COLOR
         gui_current_game_status = GAME_ONGOING
         gui_time_forfeit_winner_color = NO_COLOR
@@ -1612,6 +1632,8 @@ CONTAINS
         CALL log_gui_value('submit_human_move san', san_text)
         CALL append_move_to_history(san_text, spent_ms)
         CALL make_move(gui_board, chosen_move, move_info)
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
         gui_played_moves(gui_num_half_moves) = chosen_move
         gui_unmake_history(gui_num_half_moves) = move_info
         gui_position_key_history(gui_num_half_moves + 1) = gui_board%zobrist_key
@@ -1669,11 +1691,12 @@ CONTAINS
 
     RECURSIVE SUBROUTINE show_gui_help(main_hwnd)
         TYPE(c_ptr), VALUE :: main_hwnd
-        CHARACTER(LEN=640) :: help_text
+        CHARACTER(LEN=768) :: help_text
 
         help_text = 'Start / Reset begins a new game using the setup boxes.' // CHAR(10) // CHAR(10) // &
             'Modes: play = normal game, analysis = no auto-reply and best-move suggestions.' // CHAR(10) // &
-            'Move entry accepts SAN, coordinate moves, and pawn shorthand like dc.' // CHAR(10) // &
+            'Moves can be entered by clicking a piece and then its destination square.' // CHAR(10) // &
+            'The move box still accepts SAN, coordinate moves, and pawn shorthand like dc.' // CHAR(10) // &
             'Auto: On submits a uniquely matched typed move without Enter.' // CHAR(10) // &
             'Book Max sets opening-book half-moves per side; 0 turns book off.' // CHAR(10) // &
             'Paste a FEN in the bottom box and click Load FEN; Copy FEN copies the displayed position.' // CHAR(10) // &
@@ -1681,7 +1704,7 @@ CONTAINS
             'PGN / Eval / Time / FAN control what the movelist box shows.' // CHAR(10) // &
             '|<  <  >  >| review the finished game move by move.' // CHAR(10) // &
             'Graph opens an evaluation plot; ? and ?? mark large eval swings.'
-        CALL show_message_box(main_hwnd, TRIM(help_text), 'Fortran Chess GUI Help', MB_OK)
+        CALL show_message_box(main_hwnd, TRIM(help_text), 'Fortran Chess Click GUI Help', MB_OK)
     END SUBROUTINE show_gui_help
 
     RECURSIVE SUBROUTINE toggle_board_flip(main_hwnd)
@@ -1717,6 +1740,104 @@ CONTAINS
         END IF
         CALL refresh_gui_labels()
     END SUBROUTINE copy_current_fen
+
+    RECURSIVE LOGICAL FUNCTION board_square_from_click(lparam, sq) RESULT(hit_board)
+        INTEGER(c_intptr_t), VALUE :: lparam
+        TYPE(Square_Type), INTENT(OUT) :: sq
+        INTEGER :: click_x, click_y, display_file, display_rank
+
+        click_x = INT(IAND(lparam, INT(Z'FFFF', c_intptr_t)))
+        click_y = INT(IAND(ISHFT(lparam, -16), INT(Z'FFFF', c_intptr_t)))
+        hit_board = .FALSE.
+        sq%rank = 0
+        sq%file = 0
+
+        IF (click_x < BOARD_LEFT .OR. click_x >= BOARD_LEFT + BOARD_PIXELS) RETURN
+        IF (click_y < BOARD_TOP .OR. click_y >= BOARD_TOP + BOARD_PIXELS) RETURN
+
+        display_file = 1 + (click_x - BOARD_LEFT) / SQUARE_PIXELS
+        display_rank = 8 - (click_y - BOARD_TOP) / SQUARE_PIXELS
+        IF (.NOT. gui_board_flipped) THEN
+            sq%file = display_file
+            sq%rank = display_rank
+        ELSE
+            sq%file = 9 - display_file
+            sq%rank = 9 - display_rank
+        END IF
+        hit_board = .TRUE.
+    END FUNCTION board_square_from_click
+
+    RECURSIVE SUBROUTINE handle_board_click(main_hwnd, lparam)
+        TYPE(c_ptr), VALUE :: main_hwnd
+        INTEGER(c_intptr_t), VALUE :: lparam
+        TYPE(Square_Type) :: clicked_sq
+        TYPE(Move_Type), DIMENSION(MAX_MOVES) :: legal_moves
+        TYPE(Move_Type) :: chosen_move
+        INTEGER :: num_legal_moves, i, match_count, queen_match_index
+        CHARACTER(LEN=32) :: move_text
+
+        IF (.NOT. board_square_from_click(lparam, clicked_sq)) RETURN
+        IF (.NOT. gui_game_started) RETURN
+        IF (gui_game_over .OR. gui_replay_mode) RETURN
+        IF (gui_autoplay_mode) RETURN
+        IF ((.NOT. gui_analysis_mode) .AND. gui_board%current_player /= gui_human_color) RETURN
+
+        IF (gui_selected_from_rank == 0 .OR. gui_selected_from_file == 0) THEN
+            IF (gui_board%squares_color(clicked_sq%rank, clicked_sq%file) == gui_board%current_player) THEN
+                gui_selected_from_rank = clicked_sq%rank
+                gui_selected_from_file = clicked_sq%file
+                CALL set_status('Origin square selected.')
+                CALL refresh_gui_labels()
+                CALL invalidate_main_window()
+            END IF
+            RETURN
+        END IF
+
+        IF (clicked_sq%rank == gui_selected_from_rank .AND. clicked_sq%file == gui_selected_from_file) THEN
+            gui_selected_from_rank = 0
+            gui_selected_from_file = 0
+            CALL set_status('Selection cleared.')
+            CALL refresh_gui_labels()
+            CALL invalidate_main_window()
+            RETURN
+        END IF
+
+        IF (gui_board%squares_color(clicked_sq%rank, clicked_sq%file) == gui_board%current_player) THEN
+            gui_selected_from_rank = clicked_sq%rank
+            gui_selected_from_file = clicked_sq%file
+            CALL set_status('Origin square changed.')
+            CALL refresh_gui_labels()
+            CALL invalidate_main_window()
+            RETURN
+        END IF
+
+        CALL generate_moves(gui_board, legal_moves, num_legal_moves)
+        match_count = 0
+        queen_match_index = 0
+        DO i = 1, num_legal_moves
+            IF (legal_moves(i)%from_sq%rank == gui_selected_from_rank .AND. &
+                legal_moves(i)%from_sq%file == gui_selected_from_file .AND. &
+                legal_moves(i)%to_sq%rank == clicked_sq%rank .AND. &
+                legal_moves(i)%to_sq%file == clicked_sq%file) THEN
+                match_count = match_count + 1
+                chosen_move = legal_moves(i)
+                IF (legal_moves(i)%promotion_piece == QUEEN) queen_match_index = i
+            END IF
+        END DO
+
+        IF (match_count == 0) THEN
+            CALL set_status('That destination is not legal for the selected piece.')
+            CALL refresh_gui_labels()
+            RETURN
+        END IF
+
+        IF (queen_match_index > 0) chosen_move = legal_moves(queen_match_index)
+        move_text = move_to_coordinate(chosen_move)
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
+        CALL set_move_edit_text(TRIM(move_text))
+        CALL submit_human_move(main_hwnd)
+    END SUBROUTINE handle_board_click
 
     RECURSIVE SUBROUTINE review_to_start(main_hwnd)
         TYPE(c_ptr), VALUE :: main_hwnd
@@ -2323,6 +2444,8 @@ CONTAINS
         gui_time_forfeit_winner_color = NO_COLOR
         gui_replay_mode = .FALSE.
         gui_replay_half_move_index = 0
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
         gui_pgn_result = '*'
         CALL enable_game_controls(.TRUE.)
         CALL set_status('Took back ' // TRIM(int_to_text(undone_count)) // ' move(s).')
@@ -2350,6 +2473,8 @@ CONTAINS
             CALL set_combo_selection(hwnd_color_edit, 0)
         END IF
         gui_board_flipped = .NOT. gui_board_flipped
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
 
         IF (.NOT. gui_game_started) THEN
             CALL set_status('Sides switched.')
@@ -2458,6 +2583,8 @@ CONTAINS
         CALL log_gui_value('finish_game status', final_status)
         gui_game_over = .TRUE.
         gui_autoplay_mode = .FALSE.
+        gui_selected_from_rank = 0
+        gui_selected_from_file = 0
         CALL enable_game_controls(.FALSE.)
 
         IF (PRESENT(result_override)) THEN
@@ -3289,11 +3416,11 @@ CONTAINS
         buffer(usable_len + 1) = 0_c_int16_t
     END SUBROUTINE set_wide_string
 
-END MODULE Chess_GUI_App
+END MODULE Chess_Click_GUI_App
 
-PROGRAM Fortran_Chess_GUI
-    USE Chess_GUI_App, ONLY: run_chess_gui
+PROGRAM Fortran_Chess_Click_GUI
+    USE Chess_Click_GUI_App, ONLY: run_chess_click_gui
     IMPLICIT NONE
 
-    CALL run_chess_gui()
-END PROGRAM Fortran_Chess_GUI
+    CALL run_chess_click_gui()
+END PROGRAM Fortran_Chess_Click_GUI

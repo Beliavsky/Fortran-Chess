@@ -35,12 +35,16 @@ CONTAINS
         winner_color = NO_COLOR
         game_status = GAME_ONGOING
 
-        IF (PRESENT(position_key_history) .AND. PRESENT(num_positions)) THEN
+        IF (PRESENT(position_key_history)) THEN
+            IF (.NOT. PRESENT(num_positions)) THEN
+                ! Ignore incomplete repetition-history inputs.
+            ELSE
             matching_positions = count_matching_positions(board%zobrist_key, position_key_history, num_positions)
             IF (matching_positions >= 3) THEN
                 game_status = GAME_THREEFOLD_REPETITION
                 is_over = .TRUE.
                 RETURN
+            END IF
             END IF
         END IF
 

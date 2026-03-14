@@ -78,6 +78,12 @@ CONTAINS
                        m1%promotion_piece == m2%promotion_piece)
     END FUNCTION moves_match
 
+    PURE LOGICAL FUNCTION is_capture_move(mv) RESULT(is_capture)
+        TYPE(Move_Type), INTENT(IN) :: mv
+
+        is_capture = (mv%captured_piece /= NO_PIECE .OR. mv%is_en_passant)
+    END FUNCTION is_capture_move
+
     FUNCTION move_to_coordinate(mv) RESULT(coord)
         TYPE(Move_Type), INTENT(IN) :: mv
         CHARACTER(LEN=8) :: coord
@@ -215,6 +221,8 @@ CONTAINS
         CHARACTER(LEN=*), INTENT(IN) :: raw_input
 
         CHARACTER(LEN=32) :: normalized_input, normalized_san, normalized_coord
+        INTEGER :: i, shorthand_match_count
+        CHARACTER(LEN=1) :: from_file_char, to_file_char
 
         normalized_input = normalize_move_text(raw_input)
         normalized_san = normalize_move_text(move_to_san(board, mv, legal_moves, num_legal_moves))
@@ -222,31 +230,64 @@ CONTAINS
 
         matches = (TRIM(normalized_input) == TRIM(normalized_san) .OR. &
                    TRIM(normalized_input) == TRIM(normalized_coord))
+        IF (matches) RETURN
+
+        IF (LEN_TRIM(normalized_input) /= 2) RETURN
+        from_file_char = normalized_input(1:1)
+        to_file_char = normalized_input(2:2)
+        IF (from_file_char < 'a' .OR. from_file_char > 'h') RETURN
+        IF (to_file_char < 'a' .OR. to_file_char > 'h') RETURN
+        IF (from_file_char == to_file_char) RETURN
+
+        IF (board%squares_piece(mv%from_sq%rank, mv%from_sq%file) /= PAWN) RETURN
+        IF (.NOT. is_capture_move(mv)) RETURN
+        IF (file_to_char(mv%from_sq%file) /= from_file_char) RETURN
+        IF (file_to_char(mv%to_sq%file) /= to_file_char) RETURN
+
+        shorthand_match_count = 0
+        DO i = 1, num_legal_moves
+            IF (board%squares_piece(legal_moves(i)%from_sq%rank, legal_moves(i)%from_sq%file) /= PAWN) CYCLE
+            IF (.NOT. is_capture_move(legal_moves(i))) CYCLE
+            IF (file_to_char(legal_moves(i)%from_sq%file) /= from_file_char) CYCLE
+            IF (file_to_char(legal_moves(i)%to_sq%file) /= to_file_char) CYCLE
+            shorthand_match_count = shorthand_match_count + 1
+        END DO
+        matches = (shorthand_match_count == 1)
     END FUNCTION move_matches_input
 
-    SUBROUTINE write_pgn_file(filename, move_history, num_half_moves, result_text, move_elapsed_ms_history, time_control_tag)
+    SUBROUTINE write_pgn_file(filename, move_history, num_half_moves, result_text, move_elapsed_ms_history, time_control_tag, &
+        event_name, white_name, black_name)
         CHARACTER(LEN=*), INTENT(IN) :: filename
         CHARACTER(LEN=*), DIMENSION(:), INTENT(IN) :: move_history
         INTEGER, INTENT(IN) :: num_half_moves
         CHARACTER(LEN=*), INTENT(IN) :: result_text
         INTEGER(KIND=8), DIMENSION(:), INTENT(IN), OPTIONAL :: move_elapsed_ms_history
         CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: time_control_tag
+        CHARACTER(LEN=*), INTENT(IN), OPTIONAL :: event_name, white_name, black_name
 
         INTEGER :: unit_no, i, values(8), current_len, token_len
         CHARACTER(LEN=10) :: date_tag
         CHARACTER(LEN=256) :: current_line, token_text
+        CHARACTER(LEN=128) :: local_event_name, local_white_name, local_black_name
 
         CALL DATE_AND_TIME(VALUES=values)
         WRITE(date_tag, '(I4.4,A,I2.2,A,I2.2)') values(1), '.', values(2), '.', values(3)
 
+        local_event_name = 'FortranChess Console Game'
+        local_white_name = 'Human'
+        local_black_name = 'Computer'
+        IF (PRESENT(event_name)) local_event_name = TRIM(event_name)
+        IF (PRESENT(white_name)) local_white_name = TRIM(white_name)
+        IF (PRESENT(black_name)) local_black_name = TRIM(black_name)
+
         unit_no = 37
         OPEN(unit=unit_no, file=filename, status='UNKNOWN', action='WRITE', position='APPEND')
-        WRITE(unit_no, '(A)') '[Event "FortranChess Console Game"]'
+        WRITE(unit_no, '(A,A,A)') '[Event "', TRIM(local_event_name), '"]'
         WRITE(unit_no, '(A)') '[Site "?"]'
         WRITE(unit_no, '(A,A,A)') '[Date "', TRIM(date_tag), '"]'
         WRITE(unit_no, '(A)') '[Round "?"]'
-        WRITE(unit_no, '(A)') '[White "Human"]'
-        WRITE(unit_no, '(A)') '[Black "Computer"]'
+        WRITE(unit_no, '(A,A,A)') '[White "', TRIM(local_white_name), '"]'
+        WRITE(unit_no, '(A,A,A)') '[Black "', TRIM(local_black_name), '"]'
         WRITE(unit_no, '(A,A,A)') '[Result "', TRIM(result_text), '"]'
         IF (PRESENT(time_control_tag)) THEN
             WRITE(unit_no, '(A,A,A)') '[TimeControl "', TRIM(time_control_tag), '"]'

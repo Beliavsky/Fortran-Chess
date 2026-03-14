@@ -31,6 +31,9 @@ This produces:
 
 - `chess.exe` for the console program
 - `chessgui.exe` for the native Windows GUI window
+- `chessclickgui.exe` for the Windows GUI with click-to-move input
+- `bookeditgui.exe` for the Windows opening-book board editor
+- `booktexteditgui.exe` for the older text-based opening-book editor
 
 To clean build products:
 
@@ -52,6 +55,18 @@ Start the GUI window:
 .\chessgui.exe
 ```
 
+Start the click-to-move GUI:
+
+```powershell
+.\chessclickgui.exe
+```
+
+Start the opening-book board editor:
+
+```powershell
+.\bookeditgui.exe
+```
+
 Show help:
 
 ```powershell
@@ -68,6 +83,12 @@ Start from a PGN opening sequence:
 
 ```powershell
 .\chess.exe --open myline.pgn
+```
+
+Run batch self-play and save the games:
+
+```powershell
+.\chess.exe --selfplay-batch 100 --tc 3+2 --depth 7 --pgn selfplay.pgn
 ```
 
 ## Console Setup
@@ -116,6 +137,13 @@ directory. That file records GUI startup checkpoints, key Win32 messages, button
 actions, move-entry attempts, and other high-risk GUI paths so a crash usually
 leaves a readable trail up to the last completed step.
 
+## Opening-Book Editors
+
+The repository also builds two separate Windows opening-book tools:
+
+- `bookeditgui.exe`: a board-driven editor. Load a book, click legal moves on the board to add or follow branches, use `Back`, `Root`, and `Remove Branch` to navigate and prune, then save the updated text file.
+- `booktexteditgui.exe`: the older text-based editor with `Load`, `Save`, and `Validate`.
+
 ## Command-Line Options
 
 The program currently accepts:
@@ -127,6 +155,9 @@ The program currently accepts:
 - `-uci`
 - `--open FILE`
 - `-open FILE`
+- `--selfplay-batch N --tc M+I`
+- `--depth N`
+- `--pgn FILE`
 
 Examples:
 
@@ -134,6 +165,7 @@ Examples:
 .\chess.exe --help
 .\chess.exe --uci
 .\chess.exe --open qgd_line.pgn
+.\chess.exe --selfplay-batch 100 --tc 3+2 --depth 7 --pgn selfplay.pgn
 ```
 
 ## Move Entry
@@ -182,7 +214,7 @@ During a console game you can type:
 - `eval off`
   stop showing the evaluation after each computer move
 - `resign 5`
-  set the resignation threshold to 5 pawns
+  set the resignation threshold to 20 pawns
 - `resign off`
   disable engine resignation
 - `resign on`
@@ -228,7 +260,7 @@ The engine can resign when its evaluation falls below the configured threshold.
 
 Behavior:
 
-- the default threshold is 5 pawns
+- the default threshold is 20 pawns
 - you can disable resignation entirely
 - if the engine offers resignation, the human may refuse and continue the game
 - the engine will make at most 3 resignation attempts per game
@@ -242,6 +274,19 @@ This is useful for:
 - quick testing
 - checking opening books
 - generating games for later inspection
+
+For unattended self-play, use batch mode:
+
+```powershell
+.\chess.exe --selfplay-batch 100 --tc 3+2 --depth 7 --pgn selfplay.pgn
+```
+
+Notes:
+
+- `--tc` is required in batch mode
+- `--depth` is optional and defaults to the normal engine default
+- `--pgn` is optional and defaults to `games.pgn`
+- `--open FILE` can be combined with batch mode to start every game from the same opening sequence
 
 ## Starting From a PGN Sequence
 
@@ -395,7 +440,7 @@ Enter AI max search depth (e.g., 7, actual think time comes from the shared cloc
 7
 Show evaluation after computer moves? (Y/n):
 y
-Resign threshold in pawns (default 5, type off for no resignation):
+Resign threshold in pawns (default 20, type off for no resignation):
 5
 ```
 
